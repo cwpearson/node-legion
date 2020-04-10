@@ -26,3 +26,6 @@ target_link_libraries(0-hello-world Legion::Legion)
 
 add_executable(1-multiple 1_multiple.cu)
 target_link_libraries(1-multiple Legion::Legion)
+
+add_executable(2-ghost-gpu 2_ghost_gpu.cu)
+target_link_libraries(2-ghost-gpu Legion::Legion)

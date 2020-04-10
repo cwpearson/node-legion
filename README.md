@@ -43,7 +43,11 @@ Seems this flag should be set to the number of GPUs per node?
 ## Files
 
 * `NodeAwareMapper.hpp`: impl of node-aware mapper
-* `0_hello_world.cpp`: Hello World with `NodeAwareMapper`
+* `0_hello_world.cu`: Hello World with `NodeAwareMapper`, CPU and GPU tasks
+* `2_ghost_gpu.cu`:  Ghost tutorial with GPU stencil task
+  - [ ] GPU stencil
+  - [ ] GPU task
+  - [ ] Data accessible from GPU
 
 ## Resources
 
@@ -54,6 +58,5 @@ Seems this flag should be set to the number of GPUs per node?
 
 * Mappers
   * [Legion Mapper API](https://legion.stanford.edu/mapper/index.html)
-  * 
   * [Machine Query Interface](https://github.com/StanfordLegion/legion/blob/stable/runtime/mappers/mapping_utilities.cc)
   * [MappingConstraint, MapMustEpochInput, MapMustEpochOutput](https://github.com/StanfordLegion/legion/blob/f3f4e7d987768598b554ffca65d730f697956dc8/runtime/legion/legion_mapping.h#L1406)
