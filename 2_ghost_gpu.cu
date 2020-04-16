@@ -80,7 +80,7 @@ void top_level_task(const Task *task,
   int num_loc_procs = 0;
   for (std::set<Processor>::const_iterator it = all_procs.begin();
        it != all_procs.end(); it++)
-    if ((*it).kind() == Processor::LOC_PROC)
+    if ((*it).kind() == Processor::TOC_PROC)
       num_loc_procs++;
 
   if (num_loc_procs < num_subregions) {
@@ -89,7 +89,7 @@ void top_level_task(const Task *task,
     printf("  a separate Realm processor for each subregion.  %d of the "
            "necessary\n",
            num_loc_procs);
-    printf("  %d are available.  Please rerun with '-ll:cpu %d'.\n",
+    printf("  %d are available.  Please rerun with '-ll:gpu %d'.\n",
            num_subregions, num_subregions);
     assert(0);
   }
@@ -111,6 +111,7 @@ void top_level_task(const Task *task,
     runtime->attach_name(ghost_fs, FID_GHOST, "GHOST");
   }
 
+  // a different color for each region
   Rect<1> color_bounds(0, num_subregions - 1);
 
   // Create the partition for pieces
@@ -134,13 +135,17 @@ void top_level_task(const Task *task,
     runtime->attach_name(subspace, buf);
     Domain dom = runtime->get_index_space_domain(ctx, subspace);
     Rect<1> rect = dom;
+
     // Make two sub-regions, one on the left, and one on the right
+    // TODO: how does this magical function work
     Rect<1> extent(rect.lo, rect.lo[0] + (ORDER - 1));
     Transform<1, 1> transform;
     transform[0][0] = (rect.hi[0] - (ORDER - 1)) - rect.lo[0];
     IndexPartition ghost_ip = runtime->create_partition_by_restriction(
         ctx, subspace, ghost_color_is, transform, extent, DISJOINT_KIND);
     sprintf(buf, "ghost_ip_%d", color);
+
+
     runtime->attach_name(ghost_ip, buf);
     // Make explicit logical regions for each of the ghost spaces
     for (int idx = GHOST_LEFT; idx <= GHOST_RIGHT; idx++) {
@@ -674,27 +679,27 @@ int main(int argc, char **argv) {
 
   {
     TaskVariantRegistrar registrar(SPMD_TASK_ID, "spmd");
-    registrar.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
+    registrar.add_constraint(ProcessorConstraint(Processor::TOC_PROC));
     Runtime::preregister_task_variant<spmd_task>(registrar, "spmd");
   }
 
   {
     TaskVariantRegistrar registrar(INIT_TASK_ID, "init");
-    registrar.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
+    registrar.add_constraint(ProcessorConstraint(Processor::TOC_PROC));
     registrar.set_leaf(true);
     Runtime::preregister_task_variant<init_task>(registrar, "init");
   }
 
   {
     TaskVariantRegistrar registrar(STENCIL_TASK_ID, "stencil");
-    registrar.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
+    registrar.add_constraint(ProcessorConstraint(Processor::TOC_PROC));
     registrar.set_leaf(true);
     Runtime::preregister_task_variant<stencil_task>(registrar, "stencil");
   }
 
   {
     TaskVariantRegistrar registrar(CHECK_TASK_ID, "check");
-    registrar.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
+    registrar.add_constraint(ProcessorConstraint(Processor::TOC_PROC));
     registrar.set_leaf(true);
     Runtime::preregister_task_variant<int, check_task>(registrar, "check");
   }
