@@ -45,9 +45,10 @@ Seems this flag should be set to the number of GPUs per node?
 * `NodeAwareMapper.hpp`: impl of node-aware mapper
 * `0_hello_world.cu`: Hello World with `NodeAwareMapper`, CPU and GPU tasks
 * `2_ghost_gpu.cu`:  Ghost tutorial with GPU stencil task
-  - [ ] GPU stencil
-  - [ ] GPU task
-  - [ ] Data accessible from GPU
+  - [x] GPU task
+  - [x] Data accessible from GPU
+  - [x] GPU stencil
+  - [ ] Data in FrameBuffer
 
 ## Resources
 
