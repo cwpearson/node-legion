@@ -8,6 +8,7 @@
 #include <unistd.h>
 using namespace Legion;
 
+#define DEBUG_STENCIL_CALC
 #define ORDER 2
 
 /* Need this special kind of GPU accessor for some reason?
@@ -420,15 +421,32 @@ void spmd_task(const Task *task, const std::vector<PhysicalRegion> &regions,
 __global__ void init_kernel(Rect<1> rect, AccessorWDdouble acc) {
   const int ripple_period = 4;
   const double ripple[ripple_period] = {0, 0.25, 0, -0.25};
-
   const int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
+#if 0
+  /* CPU version in 1 thread */
+  /* seems to work */
+  if (0 == tid) {
+    for (PointInRectIterator<1> pir(rect); pir(); pir++) {
+      // use a ramp with little ripples
+      acc[*pir] = (double)(pir[0]) + ripple[pir[0] % ripple_period];
+    }
+  }
+#else
+  // rect is inclusive
   Point<1> first = rect.lo;
   Point<1> last = rect.hi;
 
-  if (tid < last - first) {
-    acc[first + tid] = double(first[0]) + ripple[first[0] % ripple_period];
+  if (0 == tid) {
+    printf("init_kernel() last=%d first=%d\n", int(last), int(first));
   }
+
+  if (first + tid <= last) {
+    double d = double(first[0] + tid) + ripple[(first[0] + tid) % ripple_period];
+    printf("init_kernel() tid=%d acc[%d]=%f\n", tid, int(first + tid), d);
+    acc[first + tid] = d;
+  }
+#endif
 }
 
 void init_task(const Task *task, const std::vector<PhysicalRegion> &regions,
@@ -443,13 +461,13 @@ void init_task(const Task *task, const std::vector<PhysicalRegion> &regions,
 
 #if 1
   // gpu accessor
+  /* seems to work */
   const AccessorWDdouble gpu_acc(regions[0], fid);
   dim3 dimBlock(256);
-  dim3 dimGrid((rect.hi - rect.lo + dimBlock.x - 1) / dimBlock.x);
+  dim3 dimGrid(((rect.hi - rect.lo + 1) + dimBlock.x - 1) / dimBlock.x);
   init_kernel<<<dimGrid, dimBlock>>>(rect, gpu_acc);
-#endif
-
-#if 0
+#else 
+  /* seems to work instead of GPU */
   const FieldAccessor<WRITE_DISCARD, double, 1> acc(regions[0], fid);
   
   for (PointInRectIterator<1> pir(rect); pir(); pir++) {
@@ -466,27 +484,27 @@ __global__ void stencil_kernel(Rect<1> leftRect,
     Rect<1> rightRect, Rect<1> mainRect, const AccessorWDdouble write_acc,
     const AccessorROdouble read_acc, const AccessorROdouble left_ghost_acc,
     const AccessorROdouble right_ghost_acc) {
-  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  const int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  const int numPoints = mainRect.hi - mainRect.lo + 1;
+  
+  double window[2 * ORDER + 1];
 
-  int numPoints = mainRect.hi - mainRect.lo;
-
-  if (tid < numPoints) {
-
+  if (mainRect.lo + tid <= mainRect.hi) {
     /* fill the stencil window
      */
-    double window[2 * ORDER + 1];
-    for (int off = -1 * ORDER; off < ORDER; ++off) {
+    for (int wi = 0; wi < 2 * ORDER + 1; ++wi) { // window index
+      const int wOff = wi - ORDER; // offset from center of window
+      const int mri = mainRect.lo + tid + wOff; // main rect index
+
       double w;
-      if (off < 0) {
-        int i = off + ORDER;
-        w = left_ghost_acc[leftRect.lo + i];
-      } else if (off >= numPoints) {
-        int i = off - numPoints;
-        w = right_ghost_acc[rightRect.lo + i];
+      if (mri < mainRect.lo) { // off the left side of the main rect
+        w = left_ghost_acc[leftRect.hi + (mri - mainRect.lo + 1)];
+      } else if (mri > mainRect.hi) { // off right side of main rect
+        w = right_ghost_acc[rightRect.lo + (mri - mainRect.hi - 1)];
       } else {
-        w = read_acc[mainRect.lo + off];
+        w = read_acc[mri];
       }
-      window[off + ORDER] = w;
+      window[wi] = w;
     }
 
     /* compute the stencil
@@ -495,7 +513,12 @@ __global__ void stencil_kernel(Rect<1> leftRect,
     assert(ORDER == 2);
     deriv = (window[0] - 8.0 * window[1] + 8.0 * window[3] - window[4]);
 
-    /* write the stencil
+#ifdef DEBUG_STENCIL_CALC
+      printf("stencil_kernel() tid=%d [%d] %g %g %g %g %g -> %g\n", tid, int(mainRect.lo + tid), window[0],
+             window[1], window[2], window[3], window[4], deriv);
+#endif
+
+      /* write the stencil
      */
     write_acc[mainRect.lo + tid] = deriv;
   }
@@ -528,13 +551,9 @@ Rect<1> right_rect = runtime->get_index_space_domain(
   const AccessorROdouble gpu_right_ghost_acc(regions[3], ghost_fid);
 
   dim3 dimBlock(256);
-  dim3 dimGrid((main_rect.hi - main_rect.lo + dimBlock.x - 1) / dimBlock.x);
+  dim3 dimGrid((main_rect.hi - main_rect.lo + 1 + dimBlock.x - 1) / dimBlock.x);
   stencil_kernel<<<dimGrid, dimBlock>>>(left_rect, right_rect, main_rect, gpu_write_acc, gpu_read_acc, gpu_left_ghost_acc, gpu_right_ghost_acc);
-  #endif
-
-  #if 0
-
-
+#else
   /* original stencil accessors
    */
    const FieldAccessor<WRITE_DISCARD, double, 1> write_acc(regions[0],
@@ -583,7 +602,7 @@ const FieldAccessor<READ_ONLY, double, 1> right_ghost_acc(regions[3],
     case 2: {
       deriv = (window[0] - 8.0 * window[1] + 8.0 * window[3] - window[4]);
 #ifdef DEBUG_STENCIL_CALC
-      printf("A: [%d] %g %g %g %g %g -> %g\n", pir_main_write.p[0], window[0],
+      printf("A: [%d] %g %g %g %g %g -> %g\n", pir_main_write[0], window[0],
              window[1], window[2], window[3], window[4], deriv);
 #endif
       break;
