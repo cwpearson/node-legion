@@ -6,8 +6,8 @@ Node-Aware Placement in Legion
 
 This will build legion with CUDA support for SM 61 and install into `legion-install` at the repo root.
 
-* Pascal: `61`
-
+* GTX 1070 (Pascal): `61`
+* V100 (Volta): `70`
 ```
 git clone https://github.com/StanfordLegion/legion.git 
 cd legion
