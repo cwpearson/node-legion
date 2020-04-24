@@ -6,6 +6,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <unistd.h>
+
+// use the NodeAwareMustEpochMapper
+#define USE_NAMEM
+#ifdef USE_NAMEM
+#include "node_aware_must_epoch_mapper.hpp"
+#endif
+
+// allow this to run multiple tasks on a single proc (for development)
+#define DISABLE_NUM_LOC_PROCS_CHECK
+
 using namespace Legion;
 
 #define DEBUG_STENCIL_CALC
@@ -84,6 +94,17 @@ void top_level_task(const Task *task,
     if ((*it).kind() == Processor::TOC_PROC)
       num_loc_procs++;
 
+#ifdef DISABLE_NUM_LOC_PROCS_CHECK
+  if (num_loc_procs < 1) {
+    printf(
+        "FATAL ERROR: This test uses a must epoch launcher, which requires\n");
+    printf("  a separate Realm processor for each subregion.  %d of the "
+           "necessary\n",
+           num_loc_procs);
+    printf("  %d are available.  Please rerun with '-ll:gpu 1'.\n", 1);
+    assert(0);
+  }
+#else
   if (num_loc_procs < num_subregions) {
     printf(
         "FATAL ERROR: This test uses a must epoch launcher, which requires\n");
@@ -94,6 +115,7 @@ void top_level_task(const Task *task,
            num_subregions, num_subregions);
     assert(0);
   }
+#endif
 
   // For this example we'll create a single index space tree, but we
   // will make different logical regions from this index space.  The
@@ -145,7 +167,6 @@ void top_level_task(const Task *task,
     IndexPartition ghost_ip = runtime->create_partition_by_restriction(
         ctx, subspace, ghost_color_is, transform, extent, DISJOINT_KIND);
     sprintf(buf, "ghost_ip_%d", color);
-
 
     runtime->attach_name(ghost_ip, buf);
     // Make explicit logical regions for each of the ghost spaces
@@ -442,7 +463,8 @@ __global__ void init_kernel(Rect<1> rect, AccessorWDdouble acc) {
   }
 
   if (first + tid <= last) {
-    double d = double(first[0] + tid) + ripple[(first[0] + tid) % ripple_period];
+    double d =
+        double(first[0] + tid) + ripple[(first[0] + tid) % ripple_period];
     printf("init_kernel() tid=%d acc[%d]=%f\n", tid, int(first + tid), d);
     acc[first + tid] = d;
   }
@@ -466,10 +488,10 @@ void init_task(const Task *task, const std::vector<PhysicalRegion> &regions,
   dim3 dimBlock(256);
   dim3 dimGrid(((rect.hi - rect.lo + 1) + dimBlock.x - 1) / dimBlock.x);
   init_kernel<<<dimGrid, dimBlock>>>(rect, gpu_acc);
-#else 
+#else
   /* seems to work instead of GPU */
   const FieldAccessor<WRITE_DISCARD, double, 1> acc(regions[0], fid);
-  
+
   for (PointInRectIterator<1> pir(rect); pir(); pir++) {
     // use a ramp with little ripples
     const int ripple_period = 4;
@@ -480,21 +502,23 @@ void init_task(const Task *task, const std::vector<PhysicalRegion> &regions,
 #endif
 }
 
-__global__ void stencil_kernel(Rect<1> leftRect,
-    Rect<1> rightRect, Rect<1> mainRect, const AccessorWDdouble write_acc,
-    const AccessorROdouble read_acc, const AccessorROdouble left_ghost_acc,
-    const AccessorROdouble right_ghost_acc) {
+__global__ void stencil_kernel(Rect<1> leftRect, Rect<1> rightRect,
+                               Rect<1> mainRect,
+                               const AccessorWDdouble write_acc,
+                               const AccessorROdouble read_acc,
+                               const AccessorROdouble left_ghost_acc,
+                               const AccessorROdouble right_ghost_acc) {
   const int tid = blockDim.x * blockIdx.x + threadIdx.x;
   const int numPoints = mainRect.hi - mainRect.lo + 1;
-  
+
   double window[2 * ORDER + 1];
 
   if (mainRect.lo + tid <= mainRect.hi) {
     /* fill the stencil window
      */
     for (int wi = 0; wi < 2 * ORDER + 1; ++wi) { // window index
-      const int wOff = wi - ORDER; // offset from center of window
-      const int mri = mainRect.lo + tid + wOff; // main rect index
+      const int wOff = wi - ORDER;               // offset from center of window
+      const int mri = mainRect.lo + tid + wOff;  // main rect index
 
       double w;
       if (mri < mainRect.lo) { // off the left side of the main rect
@@ -514,11 +538,12 @@ __global__ void stencil_kernel(Rect<1> leftRect,
     deriv = (window[0] - 8.0 * window[1] + 8.0 * window[3] - window[4]);
 
 #ifdef DEBUG_STENCIL_CALC
-      printf("stencil_kernel() tid=%d [%d] %g %g %g %g %g -> %g\n", tid, int(mainRect.lo + tid), window[0],
-             window[1], window[2], window[3], window[4], deriv);
+    printf("stencil_kernel() tid=%d [%d] %g %g %g %g %g -> %g\n", tid,
+           int(mainRect.lo + tid), window[0], window[1], window[2], window[3],
+           window[4], deriv);
 #endif
 
-      /* write the stencil
+    /* write the stencil
      */
     write_acc[mainRect.lo + tid] = deriv;
   }
@@ -536,13 +561,13 @@ void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
   FieldID ghost_fid = *(task->regions[2].privilege_fields.begin());
 
   Rect<1> main_rect = runtime->get_index_space_domain(
-    ctx, task->regions[0].region.get_index_space());
-Rect<1> left_rect = runtime->get_index_space_domain(
-    ctx, task->regions[2].region.get_index_space());
-Rect<1> right_rect = runtime->get_index_space_domain(
-    ctx, task->regions[3].region.get_index_space());
+      ctx, task->regions[0].region.get_index_space());
+  Rect<1> left_rect = runtime->get_index_space_domain(
+      ctx, task->regions[2].region.get_index_space());
+  Rect<1> right_rect = runtime->get_index_space_domain(
+      ctx, task->regions[3].region.get_index_space());
 
-  #if 1
+#if 1
   /* new GPU accessors
    */
   const AccessorWDdouble gpu_write_acc(regions[0], write_fid);
@@ -552,17 +577,19 @@ Rect<1> right_rect = runtime->get_index_space_domain(
 
   dim3 dimBlock(256);
   dim3 dimGrid((main_rect.hi - main_rect.lo + 1 + dimBlock.x - 1) / dimBlock.x);
-  stencil_kernel<<<dimGrid, dimBlock>>>(left_rect, right_rect, main_rect, gpu_write_acc, gpu_read_acc, gpu_left_ghost_acc, gpu_right_ghost_acc);
+  stencil_kernel<<<dimGrid, dimBlock>>>(
+      left_rect, right_rect, main_rect, gpu_write_acc, gpu_read_acc,
+      gpu_left_ghost_acc, gpu_right_ghost_acc);
 #else
   /* original stencil accessors
    */
-   const FieldAccessor<WRITE_DISCARD, double, 1> write_acc(regions[0],
-    write_fid);
-const FieldAccessor<READ_ONLY, double, 1> read_acc(regions[1], read_fid);
-const FieldAccessor<READ_ONLY, double, 1> left_ghost_acc(regions[2],
-     ghost_fid);
-const FieldAccessor<READ_ONLY, double, 1> right_ghost_acc(regions[3],
-      ghost_fid);
+  const FieldAccessor<WRITE_DISCARD, double, 1> write_acc(regions[0],
+                                                          write_fid);
+  const FieldAccessor<READ_ONLY, double, 1> read_acc(regions[1], read_fid);
+  const FieldAccessor<READ_ONLY, double, 1> left_ghost_acc(regions[2],
+                                                           ghost_fid);
+  const FieldAccessor<READ_ONLY, double, 1> right_ghost_acc(regions[3],
+                                                            ghost_fid);
 
   double window[2 * ORDER + 1];
 
@@ -625,7 +652,7 @@ const FieldAccessor<READ_ONLY, double, 1> right_ghost_acc(regions[3],
   assert(!pir_main_read());
   assert(!pir_main_write());
   assert(!pir_right());
-  #endif
+#endif
 }
 
 int check_task(const Task *task, const std::vector<PhysicalRegion> &regions,
@@ -644,7 +671,8 @@ int check_task(const Task *task, const std::vector<PhysicalRegion> &regions,
       ctx, task->regions[0].region.get_index_space());
   int errors = 0;
   for (PointInRectIterator<1> pir(rect); pir(); pir++) {
-    // the derivative of a ramp with ripples is a constant function with ripples
+    // the derivative of a ramp with ripples is a constant function with
+    // ripples
     const int ripple_period = 4;
     const double deriv_ripple[ripple_period] = {4.0, 0, -4.0, 0};
     double exp_value = 12.0 + deriv_ripple[pir[0] % ripple_period];
@@ -722,6 +750,11 @@ int main(int argc, char **argv) {
     registrar.set_leaf(true);
     Runtime::preregister_task_variant<int, check_task>(registrar, "check");
   }
+
+#ifdef USE_NAMEM
+  Runtime::add_registration_callback(
+      NodeAwareMustEpochMapper::mapper_registration);
+#endif
 
   return Runtime::start(argc, argv);
 }
