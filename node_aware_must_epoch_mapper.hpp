@@ -245,42 +245,69 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   */
   std::map<size_t, std::map<size_t, int64_t>> overlap;
 
-  /* return the overlap of the index space of two logical regions
+  /* return the implicit overlap of two RegionRequirements.
+    some discussion on non-interference of RegionRequirements
+    https://legion.stanford.edu/tutorial/privileges.html
    */
-  auto get_region_overlap = [&](const LogicalRegion a,
-                                const LogicalRegion b) -> int64_t {
+  auto region_requirement_overlap = [&](const RegionRequirement &a,
+                                        const RegionRequirement &b) -> int64_t {
+    // if the two regions are not rooted by the same LogicalRegion, they can't
+    if (a.region.get_tree_id() != b.region.get_tree_id()) {
+      return 0;
+    }
 
-    assert(false); // two regions could have matching index spaces but be unrelated
+    // if both are read-only they don't overlap
+    if (a.privilege == READ_ONLY && b.privilege == READ_ONLY) {
+      return 0;
+    }
 
-    // there is only possible overlap if regions have a common parent
-    // FIXME: this only compares immediate parents, may have to ascend the
-    // partition/region tree and compare
-    // assert(runtime->get_parent_logical_partition(ctx, a) ==
-    //        runtime->get_parent_logical_partition(ctx, b));
+    // if a does not write then 0
+    if ((a.privilege != WRITE_DISCARD) && (a.privilege != READ_WRITE)) {
+      return 0;
+    }
 
-    Domain aDom = runtime->get_index_space_domain(ctx, a.get_index_space());
-    Domain bDom = runtime->get_index_space_domain(ctx, b.get_index_space());
+    // which fields overlap between RegionRequirements a and b
+    std::set<FieldID> fieldOverlap;
+    for (auto &field : b.instance_fields) {
+      auto it =
+          std::find(a.instance_fields.begin(), a.instance_fields.end(), field);
+      if (it != a.instance_fields.end()) {
+        fieldOverlap.insert(field);
+      }
+    }
+    if (fieldOverlap.empty()) {
+      return 0;
+    }
+
+    Domain aDom =
+        runtime->get_index_space_domain(ctx, a.region.get_index_space());
+    Domain bDom =
+        runtime->get_index_space_domain(ctx, b.region.get_index_space());
     Domain intersection = aDom.intersection(bDom);
 
-    return intersection.get_volume();
+    size_t totalFieldSize = 0;
+    for (auto &field : fieldOverlap) {
+      totalFieldSize += runtime->get_field_size(ctx, a.region.get_field_space(), field);
+    }
+
+    return intersection.get_volume() * totalFieldSize;
   };
 
-  /* return the number of indices that overlap between tasks A and B
+  /* return the data size modified by Task `a` and accessed by Task `b`
    */
   auto get_task_overlap = [&](const Task *a, const Task *b) -> int64_t {
     int64_t bytes = 0;
 
     for (auto ra : a->regions) {
       for (auto rb : b->regions) {
-        bytes += get_region_overlap(ra.region, rb.region);
+        bytes += region_requirement_overlap(ra, rb);
       }
     }
 
     return bytes;
   };
 
-  /* return the number of indices that overlap between tasks in group A and
-   * group B
+  /* return the data size modified by TaskGroup `a` and accessed by TaskGroup `b`
    */
   auto get_overlap = [&](TaskGroup &a, TaskGroup &b) -> int64_t {
     int64_t bytes = 0;
