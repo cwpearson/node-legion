@@ -84,10 +84,15 @@ Seems this flag should be set to the number of GPUs per node?
 
 Each task comes with a set of `RegionRequirement`s, which describe the data access that a Task will make
 
-* If the `RegionRequirement` `is_no_access()`, then it does not contribute any communication
+
 * If `LogicalRegion`s are in different trees, overlap is 0
 * If `LogicalRegion`s overlap, but fields are disjoint, overlap is 0
 * If I access with `WRITE_DISCARD` privilege, no communication to me is required
+
+* It seems the NO_ACCESS flag just says the `spmd_task` will not be making accessors for the left and right regions (they are accessed through the main logical region).
+  * Therefore, we ignore it during grouping because the task will not access it directly, so it does not actually constrain which logical regions need to be in the same physical instance.
+  * We do *not* ignore it during communication, because NO_ACCESS does not prevent the task from issuing an explicit copy on that region. 
+* The `is_no_access()` on a task doesn't mean we should ignore it. It means that 
 
 ## DefaultMapper `map_must_epoch`
 
