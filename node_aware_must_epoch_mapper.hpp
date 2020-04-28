@@ -287,7 +287,8 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
 
     size_t totalFieldSize = 0;
     for (auto &field : fieldOverlap) {
-      totalFieldSize += runtime->get_field_size(ctx, a.region.get_field_space(), field);
+      totalFieldSize +=
+          runtime->get_field_size(ctx, a.region.get_field_space(), field);
     }
 
     return intersection.get_volume() * totalFieldSize;
@@ -307,7 +308,8 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     return bytes;
   };
 
-  /* return the data size modified by TaskGroup `a` and accessed by TaskGroup `b`
+  /* return the data size modified by TaskGroup `a` and accessed by TaskGroup
+   * `b`
    */
   auto get_overlap = [&](TaskGroup &a, TaskGroup &b) -> int64_t {
     int64_t bytes = 0;
@@ -333,8 +335,25 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     }
     printf("\n");
   }
-  printf("NodeAwareMustEpochMapper::%s(): %lu task groups after merge\n",
-         __FUNCTION__, groups.size());
+
+  // Query the machine graph
+  Mapping::Utilities::MachineQueryInterface mqi(machine);
+
+
+  std::vector<Processor> gpus;
+
+  std::vector<Machine::ProcessorMemoryAffinity> procMemAffinities;
+  machine.get_proc_mem_affinity(procMemAffinities);
+
+  std::cerr << "GPU processor-memory affinities\n";
+  for (auto &aff : procMemAffinities) {
+    if (aff.p.kind() == Processor::TOC_PROC) {
+    std::cerr << aff.p << "-" << aff.m << " " <<  aff.bandwidth << " " << aff.latency << "\n";
+    }
+  }
+
+  std::vector<Machine::MemoryMemoryAffinity> memMemAffinities;
+  machine.get_mem_mem_affinity(memMemAffinities);
 
   printf("NodeAwareMustEpochMapper::%s(): actually just use "
          "DefaultMapper::map_must_epoch()\n",

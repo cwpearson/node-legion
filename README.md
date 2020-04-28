@@ -80,6 +80,12 @@ Seems this flag should be set to the number of GPUs per node?
 * Interference [Tutorial: Privileges](https://legion.stanford.edu/tutorial/privileges.html)
   * Region non-interference: RegionRequirements are non-interfering on regions if they access logical regions from different region trees, or disjoint logical regions from the same tree.
 
+## Machine Mode
+
+* [Discussion in `Introduction to the Legion Mapper API`](https://legion.stanford.edu/mapper/#Machine-model)
+* `ProcessorMemoryAffinity` [(github)](https://github.com/StanfordLegion/legion/blob/f3f4e7d987768598b554ffca65d730f697956dc8/runtime/realm/machine.h#L77)
+* `Processor` in `realm/processor` [(github)](https://github.com/StanfordLegion/legion/blob/f3f4e7d987768598b554ffca65d730f697956dc8/runtime/realm/processor.h#L35)
+
 ## Using `LogicalRegion` overlap to model communication between must-epoch tasks
 
 Each task comes with a set of `RegionRequirement`s, which describe the data access that a Task will make
