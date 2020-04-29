@@ -13,7 +13,9 @@ git clone https://github.com/StanfordLegion/legion.git
 cd legion
 mkdir build
 cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=`readlink -f ../../legion-install/` -DLegion_USE_CUDA=ON -DLegion_CUDA_ARCH=61
+cmake .. -DCMAKE_INSTALL_PREFIX=`readlink -f ../../legion-install/` \
+  -DLegion_USE_CUDA=ON -DLegion_CUDA_ARCH=61 \
+  -DLegion_USE_HWLOC=ON
 make
 make install
 ```
