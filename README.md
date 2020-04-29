@@ -9,7 +9,7 @@ This will build legion with CUDA support for SM 61 and install into `legion-inst
 * GTX 1070 (Pascal): `61`
 * V100 (Volta): `70`
 ```
-git clone https://github.com/StanfordLegion/legion.git 
+git clone git@github.com:cwpearson/legion.git
 cd legion
 mkdir build
 cd build
@@ -90,6 +90,42 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
 * [Discussion in `Introduction to the Legion Mapper API`](https://legion.stanford.edu/mapper/#Machine-model)
 * `ProcessorMemoryAffinity` [(github)](https://github.com/StanfordLegion/legion/blob/f3f4e7d987768598b554ffca65d730f697956dc8/runtime/realm/machine.h#L77)
 * `Processor` in `realm/processor` [(github)](https://github.com/StanfordLegion/legion/blob/f3f4e7d987768598b554ffca65d730f697956dc8/runtime/realm/processor.h#L35)
+
+## Building a better Legion::Machine
+
+* `runtime_impl.cc`
+  * for all modules, calls 
+    * `Module::create_memories`
+    * `Module::create_processors`
+    * ...
+    * `Module::create_dma_channels`
+* `runtime/realm/cuda/cuda_module.cc`
+  * `CudaModule::create_module`:
+    * Gets the `GPUInfo`
+    * checks canAccessPeer
+  * `CudaModule::initialize`:
+    * creates the `GPU`s
+  * `CudaModule::create_memories`:
+    * calls each `GPU::create_fb_memory`
+      * ...which creates the `GPU::fbmem`
+  * `GPU::create_processor`
+    * where peer devices are discovered and their framebuffers are put into `peer_fbs`
+    * where the `ProcessorMemoryAffinity`s with its own ZC and FB memories are created
+    * where the `ProcessorMemoryAffinity`s with peer GPU FB memories are created.
+      * this is assumed to be PCIe, with 1/2 the ZC bandwidth and 2x the latency
+  * `CudaModule::create_dma_channels()`
+    * calls `GPU::create_dma_channels()`
+      * where `MemoryMemoryAffinity`s with all other peer GPU FBs are created.
+
+* Modifications:
+  * Proposal 1:
+    * `GPU::create_processor` to use nvidia-ml to discover if the other device is on the end of an NvLink, and if so, put in a different latency and bandwidth number
+    * `GPU::create_memory` to use info discovered in `GPU::create_processor` to more closely
+  * Proposal 2:
+    * Modify `CudaModule::create_module` to use nvidia-ml to detect which devices have peer NvLinks, and add a GPUInfo field to that effect.
+
+We will follow proposal 2, as it seems more consistent with the current peer detection behavior
+
 
 ## Using `LogicalRegion` overlap to model communication between must-epoch tasks
 
