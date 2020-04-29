@@ -30,15 +30,17 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
 
 ## Run our code
 
-* `-ll:gpu <int>`: "GPUs to create per process"
-* `-ll:fsize <int>`: size of framebuffer memory for each GPU in MB
-* `-ll:zsize <int>`: size of zero-copy memory for each GPU in MB
 
-Seems this flag should be set to the number of GPUs per node?
+* `print-machine`: print some info Legion can tell about the machine
+* `2-ghost-gpu`: 1D stencil with explicit ghost and exchange, with node-aware mapping
 
-```
-./0-hello-world -ll:gpu 1
-```
+* Legion Runtime Flags ([more info](https://github.com/StanfordLegion/legion#command-line-flags))
+  * `-ll:gpu <int>`: GPUs to create per process
+  * `-ll:csize <int>`: size of CPU DRAM memory per process (in MB)
+  * `-ll:fsize <int>`: size of framebuffer memory for each GPU in MB
+  * `-ll:zsize <int>`: size of zero-copy memory for each GPU in MB
+  * `-lg:sched <int>`: minimum number of tasks to try to schedule for each invocation of the scheduler
+
 
 ## Files
 
@@ -52,6 +54,7 @@ Seems this flag should be set to the number of GPUs per node?
 
 ## Resources
 
+* [Legion Github](https://github.com/StanfordLegion/legion)
 * [Legion Programming System](https://legion.stanford.edu)
 * [Legion C++ API](https://legion.stanford.edu/doxygen/)
 * [Explit Ghost Regions (`tut_ghost.cpp`)](https://legion.stanford.edu/tutorial/ghost.html)
