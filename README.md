@@ -11,11 +11,11 @@ This will build legion with CUDA support for SM 61 and install into `legion-inst
 ```
 git clone git@github.com:cwpearson/legion.git
 cd legion
+git checkout cwpearson-nvidiaml
 mkdir build
 cd build
 cmake .. -DCMAKE_INSTALL_PREFIX=`readlink -f ../../legion-install/` \
-  -DLegion_USE_CUDA=ON -DLegion_CUDA_ARCH=61 \
-  -DLegion_USE_HWLOC=ON
+  -DLegion_USE_CUDA=ON -DLegion_CUDA_ARCH=61
 make
 make install
 ```
@@ -42,6 +42,7 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
   * `-ll:fsize <int>`: size of framebuffer memory for each GPU in MB
   * `-ll:zsize <int>`: size of zero-copy memory for each GPU in MB
   * `-lg:sched <int>`: minimum number of tasks to try to schedule for each invocation of the scheduler
+  * `-level gpu=2`: to see some logging about GPU distances
 
 
 ## Files
@@ -117,12 +118,31 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
     * calls `GPU::create_dma_channels()`
       * where `MemoryMemoryAffinity`s with all other peer GPU FBs are created.
 
-* Modifications:
-  * Proposal 1:
-    * `GPU::create_processor` to use nvidia-ml to discover if the other device is on the end of an NvLink, and if so, put in a different latency and bandwidth number
-    * `GPU::create_memory` to use info discovered in `GPU::create_processor` to more closely
-  * Proposal 2:
-    * Modify `CudaModule::create_module` to use nvidia-ml to detect which devices have peer NvLinks, and add a GPUInfo field to that effect.
+Ideally we'd like to be able to differentiate between 5 different GPU-GPU cases
+  * (1) GPU - NvLink - CPU - SMP - CPU - NvLink - GPU (Newell)
+  * (2a) GPU - NvLink - GPU (DGX2, Newell)
+  * (3) GPU - PCIe - CPU - SMP - CPU - PCIe - GPU
+  * (4) GPU - PCIe - GPU
+These could be further refined, especially in the PCIe hierarchy case.
+There is one special case in the DXG-2, where it is not clear how data moves. It could be either of
+  * (2b) GPU - NvLink - GPU - NvLink - GPU
+  * (3)
+
+| kind | when | latency | bandwidth |
+|-|-|-|-|
+|ZC (CPU/GPU)| original distance to zc memory |200 | 20
+|NVLINK_CLOSE | DistanceKind::NVLINK_CLOSE | 260 | 16 |
+|NVLINK_FAR | DistanceKind::NVLINK_FAR | 320 | 33 |
+|pcie | all other cases (original GPU/GPU distance) | 400 |  10
+
+
+* Version 1:
+  * We collect pairwise GPU connection info in `CudaModule::create_module`. If src is connected to dst, it is (1). If src is not connected to dst with NvLink directly, then we assume case (2a) or (2b), which we will not distinguish.
+  If src has no NvLinks, depending on the last common PCIe ancestor, we distinguish between (3) and (4). The case will be used in `GPU::create_processor` and `GPU::create_dma_channels` to set the right latency and bandwidth values for `MemoryMemoryAffinity`s and `ProcessorMemoryAffinity`s. `channel.cc` has case `XFER_GPU_PEER_FB` that probably needs some numbers?
+* Verson 2:
+  * We will build a true system graph, including NvSwitches. Each node will have a link with estimated bandwidth and latency properties, and the overall affinity will be determined by merging links along the correct path.
+
+
 
 We will follow proposal 2, as it seems more consistent with the current peer detection behavior
 
