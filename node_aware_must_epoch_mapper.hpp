@@ -3,11 +3,253 @@
 // based off of https://legion.stanford.edu/tutorial/custom_mappers.html
 
 #include "legion.h"
+
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "default_mapper.h"
+
+/* assignment problem utilities */
+namespace ap {
+
+struct Rect {
+  uint64_t x;
+  uint64_t y;
+  Rect(uint64_t _x, uint64_t _y) : x(_x), y(_y) {}
+
+  uint64_t flatten() const noexcept { return x * y; }
+  bool operator==(const Rect &rhs) const noexcept {
+    return x == rhs.x && y == rhs.y;
+  }
+  bool operator!=(const Rect &rhs) const noexcept { return !((*this) == rhs); }
+};
+
+template <typename T> class Mat2D {
+private:
+  void swap(Mat2D &other) noexcept {
+    std::swap(data_, other.data_);
+    std::swap(rect_, other.rect_);
+  }
+
+public:
+  std::vector<T> data_;
+  Rect rect_;
+
+  Mat2D() : rect_(0, 0) {}
+  Mat2D(int64_t x, int64_t y) : data_(x * y), rect_(x, y) {}
+  Mat2D(int64_t x, int64_t y, const T &v) : data_(x * y, v), rect_(x, y) {}
+  Mat2D(Rect s) : Mat2D(s.x, s.y) {}
+  Mat2D(Rect s, const T &val) : Mat2D(s.x, s.y, val) {}
+
+  Mat2D(const std::initializer_list<std::initializer_list<T>> &ll) : Mat2D() {
+
+    if (ll.size() > 0) {
+      resize(ll.begin()->size(), ll.size());
+    }
+
+    auto llit = ll.begin();
+    for (size_t i = 0; i < rect_.y; ++i, ++llit) {
+      assert(llit->size() == rect_.x);
+      auto lit = llit->begin();
+      for (size_t j = 0; j < rect_.x; ++j, ++lit) {
+        at(i, j) = *lit;
+      }
+    }
+  }
+
+  Mat2D(const Mat2D &other) = default;
+  Mat2D &operator=(const Mat2D &rhs) = default;
+  Mat2D(Mat2D &&other) = default;
+  Mat2D &operator=(Mat2D &&rhs) = default;
+
+  inline T &at(int64_t i, int64_t j) noexcept {
+    assert(i < rect_.y);
+    assert(j < rect_.x);
+    return data_[i * rect_.x + j];
+  }
+  inline const T &at(int64_t i, int64_t j) const noexcept {
+    assert(i < rect_.y);
+    assert(j < rect_.x);
+    return data_[i * rect_.x + j];
+  }
+
+  /* grow or shrink to [x,y], preserving top-left corner of matrix */
+  void resize(int64_t x, int64_t y) {
+    Mat2D mat(x, y);
+
+    const int64_t copyRows = std::min(mat.rect_.y, rect_.y);
+    const int64_t copyCols = std::min(mat.rect_.x, rect_.x);
+
+    for (int64_t i = 0; i < copyRows; ++i) {
+      std::memcpy(&mat.at(i, 0), &at(i, 0), copyCols * sizeof(T));
+    }
+    swap(mat);
+  }
+
+  inline const Rect &shape() const noexcept { return rect_; }
+
+  bool operator==(const Mat2D &rhs) const noexcept {
+    if (rect_ != rhs.rect_) {
+      return false;
+    }
+    for (uint64_t i = 0; i < rect_.y; ++i) {
+      for (uint64_t j = 0; j < rect_.x; ++j) {
+        if (data_[i * rect_.x + j] != rhs.data_[i * rect_.x + j]) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  template <typename S> Mat2D &operator/=(const S &s) {
+    for (uint64_t i = 0; i < rect_.y; ++i) {
+      for (uint64_t j = 0; j < rect_.x; ++j) {
+        data_[i * rect_.x + j] /= s;
+      }
+    }
+    return *this;
+  }
+};
+
+namespace detail {
+
+inline double cost_product(double we, double de) {
+  if (0 == we || 0 == de) {
+    return 0;
+  } else {
+    return we * de;
+  }
+}
+
+
+inline double cost(const Mat2D<double> &w,      // weight
+                   const Mat2D<double> &d,      // distance
+                   const std::vector<size_t> &f // agent for each task
+) {
+  assert(w.shape().x == w.shape().y);
+  assert(d.shape().x == d.shape().y);
+  assert(w.shape().x == f.size()); // one weight per task
+
+  double ret = 0;
+
+  for (size_t a = 0; a < w.shape().y; ++a) {
+    for (size_t b = 0; b < w.shape().x; ++b) {
+      double p;
+      size_t fa = f[a];
+      size_t fb = f[b];
+      assert(fa < d.shape().x && "task assigned to non-existant agent");
+      assert(fb < d.shape().y && "task assigned to non-existant agent");
+      p = cost_product(w.at(a, b), d.at(f[a], f[b]));
+      ret += p;
+    }
+  }
+
+  return ret;
+}
+
+} // namespace detail
+
+/* brute-force solution to QAP, placing the final cost in costp if not null
+ */
+inline std::vector<size_t> solve_qap(double *costp, const Mat2D<double> &w,
+                                     Mat2D<double> &d) {
+
+  assert(w.shape() == d.shape());
+  assert(w.shape().x == d.shape().y);
+
+  std::vector<size_t> f(w.shape().x);
+  for (size_t i = 0; i < w.shape().x; ++i) {
+    f[i] = i;
+  }
+
+  std::vector<size_t> bestF = f;
+  double bestCost = detail::cost(w, d, f);
+  do {
+    const double cost = detail::cost(w, d, f);
+    if (bestCost > cost) {
+      bestF = f;
+      bestCost = cost;
+    }
+  } while (std::next_permutation(f.begin(), f.end()));
+
+  if (costp) {
+    *costp = bestCost;
+  }
+
+  return bestF;
+}
+
+/* brute-force solution to assignment problem
+
+   objective: minimize total flow * distance product under assignment
+
+   `s`: cardinality, maximum amount of tasks per agent
+   `w`: flow between tasks
+   `d`: distance between agents
+
+   return empty vector if no valid assignment was found
+ */
+inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
+                                    Mat2D<double> &d, const int64_t s) {
+
+  assert(d.shape().x == d.shape().y);
+  assert(w.shape().x == w.shape().y);
+
+  const int64_t numAgents = d.shape().x;
+  const int64_t numTasks = w.shape().x;
+
+  std::vector<size_t> f(numTasks, 0);
+
+  auto next_f = [&]() -> bool {
+    // if f == [numAgents-1, numAgents-1, ...]
+    if (std::all_of(f.begin(), f.end(), [&](size_t u) {
+          return u == (numAgents ? numAgents - 1 : 0);
+        })) {
+      return false;
+    }
+
+    bool carry;
+    int64_t i = 0;
+    do {
+      carry = false;
+      ++f[i];
+      if (f[i] >= numAgents) {
+        f[i] = 0;
+        ++i;
+        carry = true;
+      }
+    } while (true == carry);
+    return true;
+  };
+
+  std::vector<size_t> bestF;
+  double bestCost = std::numeric_limits<double>::infinity();
+  do {
+    // if cardinality of any assignment is too large, skip cost check
+    for (int64_t a = 0; a < numAgents; ++a) {
+      if (std::count(f.begin(), f.end(), a) > s) {
+        continue;
+      }
+    }
+
+    const double cost = detail::cost(w, d, f);
+    if (bestCost > cost) {
+      bestF = f;
+      bestCost = cost;
+    }
+  } while (next_f());
+
+  if (costp) {
+    *costp = bestCost;
+  }
+
+  return bestF;
+}
+
+} // namespace ap
 
 using namespace Legion;
 using namespace Legion::Mapping;
@@ -331,29 +573,112 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   for (auto &src : overlap) {
     printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
     for (auto &dst : src.second) {
-      printf(" %ld", dst.second);
+      printf(" %6ld", dst.second);
     }
     printf("\n");
   }
 
-  // Query the machine graph
-  Mapping::Utilities::MachineQueryInterface mqi(machine);
+  // the framebuffer for each GPU
+  std::map<Processor, Memory> gpuFbs;
 
-
-  std::vector<Processor> gpus;
-
+  printf("NodeAwareMustEpochMapper::%s(): GPU-FB affinities\n",
+         __FUNCTION__);
   std::vector<Machine::ProcessorMemoryAffinity> procMemAffinities;
   machine.get_proc_mem_affinity(procMemAffinities);
-
-  std::cerr << "GPU processor-memory affinities\n";
   for (auto &aff : procMemAffinities) {
-    if (aff.p.kind() == Processor::TOC_PROC) {
-    std::cerr << aff.p << "-" << aff.m << " " <<  aff.bandwidth << " " << aff.latency << "\n";
+    if (aff.p.kind() == Processor::TOC_PROC &&
+        aff.m.kind() == Memory::GPU_FB_MEM) {
+      gpuFbs[aff.p] = aff.m;
+      std::cerr << aff.p << "-" << aff.m << " " << aff.bandwidth << " "
+                << aff.latency << "\n";
     }
   }
 
+  printf("NodeAwareMustEpochMapper::%s(): GPU memory-memory affinities\n",
+         __FUNCTION__);
   std::vector<Machine::MemoryMemoryAffinity> memMemAffinities;
   machine.get_mem_mem_affinity(memMemAffinities);
+  for (auto &aff : memMemAffinities) {
+    std::cerr << aff.m1 << "-" << aff.m2 << " " << aff.bandwidth << " "
+              << aff.latency << "\n";
+  }
+
+  /* build the distance matrix */
+  assert(gpuFbs.size() > 0);
+  ap::Mat2D<double> distance(gpuFbs.size(), gpuFbs.size(), 0);
+  {
+    size_t i = 0;
+    for (auto &src : gpuFbs) {
+      size_t j = 0;
+      for (auto &dst : gpuFbs) {
+        // TODO: self distance is 0
+        if (src == dst) {
+          distance.at(i, j) = 0;
+        } else {
+          bool found = false;
+          for (auto &mma : memMemAffinities) {
+            if (mma.m1 == src.second && mma.m2 == dst.second) {
+              distance.at(i, j) = mma.bandwidth;
+              found = true;
+              break;
+            }
+          }
+          assert(found && "couldn't find mem-mem affinity for GPU FBs");
+        }
+        ++j;
+      }
+      ++i;
+    }
+  }
+
+  printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
+  for (size_t i = 0; i < distance.shape().y; ++i) {
+    printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
+    for (size_t j = 0; j < distance.shape().x; ++j) {
+      printf(" %6f", distance.at(i, j));
+    }
+    printf("\n");
+  }
+
+  /* build the flow matrix */
+  ap::Mat2D<double> weight(overlap.size(), overlap.size(), 0);
+  {
+    size_t i = 0;
+    for (auto &src : overlap) {
+      size_t j = 0;
+      for (auto &dst : src.second) {
+        weight.at(i, j) = dst.second;
+        ++j;
+      }
+      ++i;
+    }
+  }
+
+  printf("NodeAwareMustEpochMapper::%s(): weight matrix\n", __FUNCTION__);
+  for (size_t i = 0; i < weight.shape().y; ++i) {
+    printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
+    for (size_t j = 0; j < weight.shape().x; ++j) {
+      printf(" %6f", weight.at(i, j));
+    }
+    printf("\n");
+  }
+
+  // Max task -> agent assignment
+  int64_t cardinality = (overlap.size() + gpuFbs.size() - 1) / gpuFbs.size();
+  printf("NodeAwareMustEpochMapper::%s(): max cardinality %ld\n", __FUNCTION__,
+         cardinality);
+
+  double cost;
+  std::vector<size_t> assignment =
+      ap::solve_ap(&cost, weight, distance, cardinality);
+
+  printf("NodeAwareMustEpochMapper::%s(): task assignment:\n", __FUNCTION__);
+  for (auto &e : assignment) {
+    std::cerr << e << " ";
+  }
+  std::cerr << "\n";
+  printf("NodeAwareMustEpochMapper::%s(): cost was %f\n", __FUNCTION__,
+         cost);
 
   printf("NodeAwareMustEpochMapper::%s(): actually just use "
          "DefaultMapper::map_must_epoch()\n",
