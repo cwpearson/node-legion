@@ -124,7 +124,6 @@ inline double cost_product(double we, double de) {
   }
 }
 
-
 inline double cost(const Mat2D<double> &w,      // weight
                    const Mat2D<double> &d,      // distance
                    const std::vector<size_t> &f // agent for each task
@@ -581,8 +580,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   // the framebuffer for each GPU
   std::map<Processor, Memory> gpuFbs;
 
-  printf("NodeAwareMustEpochMapper::%s(): GPU-FB affinities\n",
-         __FUNCTION__);
+  printf("NodeAwareMustEpochMapper::%s(): GPU-FB affinities\n", __FUNCTION__);
   std::vector<Machine::ProcessorMemoryAffinity> procMemAffinities;
   machine.get_proc_mem_affinity(procMemAffinities);
   for (auto &aff : procMemAffinities) {
@@ -677,8 +675,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     std::cerr << e << " ";
   }
   std::cerr << "\n";
-  printf("NodeAwareMustEpochMapper::%s(): cost was %f\n", __FUNCTION__,
-         cost);
+  printf("NodeAwareMustEpochMapper::%s(): cost was %f\n", __FUNCTION__, cost);
 
   printf("NodeAwareMustEpochMapper::%s(): actually just use "
          "DefaultMapper::map_must_epoch()\n",
