@@ -14,16 +14,40 @@
 /* assignment problem utilities */
 namespace ap {
 
-struct Rect {
-  uint64_t x;
-  uint64_t y;
-  Rect(uint64_t _x, uint64_t _y) : x(_x), y(_y) {}
+template <unsigned N> class Extent {
+  int64_t x[N];
 
-  uint64_t flatten() const noexcept { return x * y; }
-  bool operator==(const Rect &rhs) const noexcept {
-    return x == rhs.x && y == rhs.y;
+public:
+  Extent() = default;
+  Extent(int64_t _x[N]) {
+    x = _x;
   }
-  bool operator!=(const Rect &rhs) const noexcept { return !((*this) == rhs); }
+  Extent(Extent &&other) = default;
+  Extent(const Extent &other) = default;
+
+  Extent &operator=(Extent &&other) = default;
+  Extent &operator=(const Extent &other) = default;
+
+  uint64_t flatten() const noexcept {
+    int64_t p = x[0];
+    for (unsigned i = 1; i < N; ++i) {
+      p *= x[i];
+    }
+    return p;
+  }
+  bool operator==(const Extent &rhs) const noexcept {
+    bool ret = true;
+    for (unsigned i = 0; i < N; ++i) {
+      ret &= (x[i] == rhs.x[i]);
+    }
+    return ret;
+  }
+  bool operator!=(const Extent &rhs) const noexcept {
+    return !((*this) == rhs);
+  }
+
+  int64_t &operator[](size_t i) noexcept { return x[i]; }
+  int64_t const &operator[](size_t i) const noexcept { return x[i]; }
 };
 
 template <typename T> class Mat2D {
@@ -35,13 +59,22 @@ private:
 
 public:
   std::vector<T> data_;
-  Rect rect_;
+  Extent<2> rect_;
 
-  Mat2D() : rect_(0, 0) {}
-  Mat2D(int64_t x, int64_t y) : data_(x * y), rect_(x, y) {}
-  Mat2D(int64_t x, int64_t y, const T &v) : data_(x * y, v), rect_(x, y) {}
-  Mat2D(Rect s) : Mat2D(s.x, s.y) {}
-  Mat2D(Rect s, const T &val) : Mat2D(s.x, s.y, val) {}
+  Mat2D() {
+    rect_[0] = 0;
+    rect_[1] = 0;
+  }
+  Mat2D(int64_t x, int64_t y) : data_(x * y) {
+    rect_[0] = x;
+    rect_[1] = y;
+  }
+  Mat2D(int64_t x, int64_t y, const T &v) : data_(x * y, v) {
+    rect_[0] = x;
+    rect_[1] = y;
+  }
+  Mat2D(Extent<2> s) : Mat2D(s[0], s[1]) {}
+  Mat2D(Extent<2> s, const T &val) : Mat2D(s[0], s[1], val) {}
 
   Mat2D(const std::initializer_list<std::initializer_list<T>> &ll) : Mat2D() {
 
@@ -50,10 +83,10 @@ public:
     }
 
     auto llit = ll.begin();
-    for (size_t i = 0; i < rect_.y; ++i, ++llit) {
-      assert(llit->size() == rect_.x);
+    for (size_t i = 0; i < rect_[1]; ++i, ++llit) {
+      assert(llit->size() == rect_[0]);
       auto lit = llit->begin();
-      for (size_t j = 0; j < rect_.x; ++j, ++lit) {
+      for (size_t j = 0; j < rect_[0]; ++j, ++lit) {
         at(i, j) = *lit;
       }
     }
@@ -65,22 +98,22 @@ public:
   Mat2D &operator=(Mat2D &&rhs) = default;
 
   inline T &at(int64_t i, int64_t j) noexcept {
-    assert(i < rect_.y);
-    assert(j < rect_.x);
-    return data_[i * rect_.x + j];
+    assert(i < rect_[1]);
+    assert(j < rect_[0]);
+    return data_[i * rect_[0] + j];
   }
   inline const T &at(int64_t i, int64_t j) const noexcept {
-    assert(i < rect_.y);
-    assert(j < rect_.x);
-    return data_[i * rect_.x + j];
+    assert(i < rect_[1]);
+    assert(j < rect_[0]);
+    return data_[i * rect_[0] + j];
   }
 
   /* grow or shrink to [x,y], preserving top-left corner of matrix */
   void resize(int64_t x, int64_t y) {
     Mat2D mat(x, y);
 
-    const int64_t copyRows = std::min(mat.rect_.y, rect_.y);
-    const int64_t copyCols = std::min(mat.rect_.x, rect_.x);
+    const int64_t copyRows = std::min(mat.rect_[1], rect_[1]);
+    const int64_t copyCols = std::min(mat.rect_[0], rect_[0]);
 
     for (int64_t i = 0; i < copyRows; ++i) {
       std::memcpy(&mat.at(i, 0), &at(i, 0), copyCols * sizeof(T));
@@ -88,15 +121,15 @@ public:
     swap(mat);
   }
 
-  inline const Rect &shape() const noexcept { return rect_; }
+  inline const Extent<2> &shape() const noexcept { return rect_; }
 
   bool operator==(const Mat2D &rhs) const noexcept {
     if (rect_ != rhs.rect_) {
       return false;
     }
-    for (uint64_t i = 0; i < rect_.y; ++i) {
-      for (uint64_t j = 0; j < rect_.x; ++j) {
-        if (data_[i * rect_.x + j] != rhs.data_[i * rect_.x + j]) {
+    for (uint64_t i = 0; i < rect_[1]; ++i) {
+      for (uint64_t j = 0; j < rect_[0]; ++j) {
+        if (data_[i * rect_[0] + j] != rhs.data_[i * rect_[0] + j]) {
           return false;
         }
       }
@@ -105,9 +138,9 @@ public:
   }
 
   template <typename S> Mat2D &operator/=(const S &s) {
-    for (uint64_t i = 0; i < rect_.y; ++i) {
-      for (uint64_t j = 0; j < rect_.x; ++j) {
-        data_[i * rect_.x + j] /= s;
+    for (uint64_t i = 0; i < rect_[1]; ++i) {
+      for (uint64_t j = 0; j < rect_[0]; ++j) {
+        data_[i * rect_[0] + j] /= s;
       }
     }
     return *this;
@@ -128,19 +161,19 @@ inline double cost(const Mat2D<double> &w,      // weight
                    const Mat2D<double> &d,      // distance
                    const std::vector<size_t> &f // agent for each task
 ) {
-  assert(w.shape().x == w.shape().y);
-  assert(d.shape().x == d.shape().y);
-  assert(w.shape().x == f.size()); // one weight per task
+  assert(w.shape()[0] == w.shape()[1]);
+  assert(d.shape()[0] == d.shape()[1]);
+  assert(w.shape()[0] == f.size()); // one weight per task
 
   double ret = 0;
 
-  for (size_t a = 0; a < w.shape().y; ++a) {
-    for (size_t b = 0; b < w.shape().x; ++b) {
+  for (size_t a = 0; a < w.shape()[1]; ++a) {
+    for (size_t b = 0; b < w.shape()[0]; ++b) {
       double p;
       size_t fa = f[a];
       size_t fb = f[b];
-      assert(fa < d.shape().x && "task assigned to non-existant agent");
-      assert(fb < d.shape().y && "task assigned to non-existant agent");
+      assert(fa < d.shape()[0] && "task assigned to non-existant agent");
+      assert(fb < d.shape()[1] && "task assigned to non-existant agent");
       p = cost_product(w.at(a, b), d.at(f[a], f[b]));
       ret += p;
     }
@@ -157,10 +190,10 @@ inline std::vector<size_t> solve_qap(double *costp, const Mat2D<double> &w,
                                      Mat2D<double> &d) {
 
   assert(w.shape() == d.shape());
-  assert(w.shape().x == d.shape().y);
+  assert(w.shape()[0] == d.shape()[1]);
 
-  std::vector<size_t> f(w.shape().x);
-  for (size_t i = 0; i < w.shape().x; ++i) {
+  std::vector<size_t> f(w.shape()[0]);
+  for (size_t i = 0; i < w.shape()[0]; ++i) {
     f[i] = i;
   }
 
@@ -194,11 +227,11 @@ inline std::vector<size_t> solve_qap(double *costp, const Mat2D<double> &w,
 inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
                                     Mat2D<double> &d, const int64_t s) {
 
-  assert(d.shape().x == d.shape().y);
-  assert(w.shape().x == w.shape().y);
+  assert(d.shape()[0] == d.shape()[1]);
+  assert(w.shape()[0] == w.shape()[1]);
 
-  const int64_t numAgents = d.shape().x;
-  const int64_t numTasks = w.shape().x;
+  const int64_t numAgents = d.shape()[0];
+  const int64_t numTasks = w.shape()[0];
 
   std::vector<size_t> f(numTasks, 0);
 
@@ -630,9 +663,9 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   }
 
   printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
-  for (size_t i = 0; i < distance.shape().y; ++i) {
+  for (size_t i = 0; i < distance.shape()[1]; ++i) {
     printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
-    for (size_t j = 0; j < distance.shape().x; ++j) {
+    for (size_t j = 0; j < distance.shape()[0]; ++j) {
       printf(" %6f", distance.at(i, j));
     }
     printf("\n");
@@ -653,24 +686,33 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   }
 
   printf("NodeAwareMustEpochMapper::%s(): weight matrix\n", __FUNCTION__);
-  for (size_t i = 0; i < weight.shape().y; ++i) {
+  for (size_t i = 0; i < weight.shape()[1]; ++i) {
     printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
-    for (size_t j = 0; j < weight.shape().x; ++j) {
+    for (size_t j = 0; j < weight.shape()[0]; ++j) {
       printf(" %6f", weight.at(i, j));
     }
     printf("\n");
   }
 
   // Max task -> agent assignment
+  // if more tasks than agents, distribute tasks
+  // if more agents than tasks, max of one task per agent
+  // TODO: for a must-epoch task, we should never have more tasks than agents
   int64_t cardinality = (overlap.size() + gpuFbs.size() - 1) / gpuFbs.size();
   printf("NodeAwareMustEpochMapper::%s(): max cardinality %ld\n", __FUNCTION__,
          cardinality);
 
+  // TODO: for a must-epoch task, we should never have more tasks than agents,
+  // so solve_ap only needs to work for distance >= weight
   double cost;
   std::vector<size_t> assignment =
       ap::solve_ap(&cost, weight, distance, cardinality);
+  if (assignment.empty()) {
+    std::cerr << "couldn't find an assignment\n";
+    exit(1);
+  }
 
-  printf("NodeAwareMustEpochMapper::%s(): task assignment:\n", __FUNCTION__);
+  printf("NodeAwareMustEpochMapper::%s(): task assignment:", __FUNCTION__);
   for (auto &e : assignment) {
     std::cerr << e << " ";
   }
