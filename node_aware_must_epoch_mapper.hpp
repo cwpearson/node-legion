@@ -14,6 +14,35 @@
 /* assignment problem utilities */
 namespace ap {
 
+
+struct RollingStatistics {
+  RollingStatistics() {reset(); } 
+  size_t n;
+  double sum_;
+  double min_;
+  double max_;
+
+  void reset() {
+    n = 0;
+    sum_ = 0;
+    min_ = std::numeric_limits<double>::infinity();
+    max_ = -1 * std::numeric_limits<double>::infinity();
+  }
+
+  void insert(double d) {
+    ++n;
+    sum_ += d;
+    min_ = std::min(min_, d);
+    max_ = std::max(max_, d);
+  }
+
+  double mean() const noexcept {return sum_ / n; }
+  double min() const noexcept { return min_; }
+  double max() const noexcept { return max_; }
+  double count() const noexcept { return n; }
+};
+
+
 template <unsigned N> class Extent {
   int64_t x[N];
 
@@ -235,10 +264,12 @@ inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
 
   std::vector<size_t> f(numTasks, 0);
 
+  RollingStatistics stats;
+
   auto next_f = [&]() -> bool {
     // if f == [numAgents-1, numAgents-1, ...]
     if (std::all_of(f.begin(), f.end(), [&](size_t u) {
-          return u == (numAgents ? numAgents - 1 : 0);
+          return u == (numAgents > 0 ? numAgents - 1 : 0);
         })) {
       return false;
     }
@@ -261,13 +292,19 @@ inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
   double bestCost = std::numeric_limits<double>::infinity();
   do {
     // if cardinality of any assignment is too large, skip cost check
+    bool cardCheckFail = false;
     for (int64_t a = 0; a < numAgents; ++a) {
       if (std::count(f.begin(), f.end(), a) > s) {
-        continue;
+        cardCheckFail = true;
+	break;
       }
+    }
+    if (cardCheckFail) {
+      continue;
     }
 
     const double cost = detail::cost(w, d, f);
+    stats.insert(cost);
     if (bestCost > cost) {
       bestF = f;
       bestCost = cost;
@@ -277,6 +314,8 @@ inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
   if (costp) {
     *costp = bestCost;
   }
+
+  std::cerr << "Considered " << stats.count() << " placements: min=" << stats.min() << " avg=" << stats.mean() << " max=" << stats.max() << "\n";
 
   return bestF;
 }
@@ -610,20 +649,45 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     printf("\n");
   }
 
-  // the framebuffer for each GPU
-  std::map<Processor, Memory> gpuFbs;
-
   printf("NodeAwareMustEpochMapper::%s(): GPU-FB affinities\n", __FUNCTION__);
   std::vector<Machine::ProcessorMemoryAffinity> procMemAffinities;
   machine.get_proc_mem_affinity(procMemAffinities);
   for (auto &aff : procMemAffinities) {
+    // find the closes FB mem to each GPU
     if (aff.p.kind() == Processor::TOC_PROC &&
         aff.m.kind() == Memory::GPU_FB_MEM) {
-      gpuFbs[aff.p] = aff.m;
       std::cerr << aff.p << "-" << aff.m << " " << aff.bandwidth << " "
                 << aff.latency << "\n";
     }
   }
+
+  // find the best FB for each GPU
+  std::map<Processor, Memory> gpuFbs;
+  {
+    std::map<Processor, Machine::ProcessorMemoryAffinity> best;
+    for( auto &aff : procMemAffinities) {
+      if (aff.p.kind() == Processor::TOC_PROC && aff.m.kind() == Memory::GPU_FB_MEM){
+        auto it = best.find(aff.p);
+        if (it != best.end()) {
+          if (aff.bandwidth > it->second.bandwidth) {
+            it->second = aff;
+          }
+        } else {
+          best[aff.p] = aff;
+        }
+      }
+    }
+
+    for (auto &kv: best) {
+      assert(kv.first == kv.second.p);
+      std::cerr << "best " << kv.first << " " << kv.second.m << "\n";
+      	    gpuFbs[kv.first] = kv.second.m;
+      assert(kv.first.kind() == Processor::TOC_PROC);
+      assert(kv.second.m.kind() == Memory::GPU_FB_MEM);
+    }
+
+  }
+
 
   printf("NodeAwareMustEpochMapper::%s(): GPU memory-memory affinities\n",
          __FUNCTION__);
@@ -642,6 +706,9 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     for (auto &src : gpuFbs) {
       size_t j = 0;
       for (auto &dst : gpuFbs) {
+
+        std::cerr << "looking for mma " << src.second << " " << dst.second << "\n";
+
         // TODO: self distance is 0
         if (src == dst) {
           distance.at(i, j) = 0;
@@ -649,7 +716,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
           bool found = false;
           for (auto &mma : memMemAffinities) {
             if (mma.m1 == src.second && mma.m2 == dst.second) {
-              distance.at(i, j) = mma.bandwidth;
+              distance.at(i, j) = 1.0 / mma.bandwidth;
               found = true;
               break;
             }
