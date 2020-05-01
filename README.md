@@ -132,7 +132,7 @@ There is one special case in the DXG-2, where it is not clear how data moves. It
 |-|-|-|-|
 |ZC (CPU/GPU)| original distance to zc memory |200 | 20
 |NVLINK_CLOSE | DistanceKind::NVLINK_CLOSE | 260 | 16 |
-|NVLINK_FAR | DistanceKind::NVLINK_FAR | 320 | 33 |
+|NVLINK_FAR | DistanceKind::NVLINK_FAR | 320 | 13 |
 |pcie | all other cases (original GPU/GPU distance) | 400 |  10
 
 
@@ -144,7 +144,7 @@ There is one special case in the DXG-2, where it is not clear how data moves. It
 
 
 
-We will follow proposal 2, as it seems more consistent with the current peer detection behavior
+We will start with proposal 1.
 
 
 ## Using `LogicalRegion` overlap to model communication between must-epoch tasks
