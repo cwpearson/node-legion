@@ -181,3 +181,11 @@ Each task comes with a set of `RegionRequirement`s, which describe the data acce
 
 Use region interference as a proxy for required data exchange between tasks
 
+## Future Experiments
+
+* 2D Stencil
+* Neural Network training
+  * interplay between combined model and data parallelism
+* Mert's hierarchical methods? Or sinogram/tomogram data placement
+* Block Sparse matrix operations?
+
