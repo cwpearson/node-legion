@@ -6,8 +6,10 @@ Node-Aware Placement in Legion
 
 This will build legion with CUDA support for SM 61 and install into `legion-install` at the repo root.
 
-* GTX 1070 (Pascal): `61`
-* V100 (Volta): `70`
+* GTX 1070 (Pascal): `-DLegion_CUDA_ARCH=61`
+* V100 (Volta): `-DLegion_CUDA_ARCH=70`
+* `-DLegion_OUTPUT_LEVEL=[SPEW DEBUG INFO PRINT WARNING ERROR FATAL NONE]`
+
 ```
 git clone git@github.com:cwpearson/legion.git
 cd legion
@@ -15,7 +17,8 @@ git checkout cwpearson-nvidiaml
 mkdir build
 cd build
 cmake .. -DCMAKE_INSTALL_PREFIX=`readlink -f ../../legion-install/` \
-  -DLegion_USE_CUDA=ON -DLegion_CUDA_ARCH=61
+  -DLegion_USE_CUDA=ON -DLegion_CUDA_ARCH=61 \
+  -DLegion_OUTPUT_LEVEL=DEBUG
 make
 make install
 ```
@@ -42,7 +45,10 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
   * `-ll:fsize <int>`: size of framebuffer memory for each GPU in MB
   * `-ll:zsize <int>`: size of zero-copy memory for each GPU in MB
   * `-lg:sched <int>`: minimum number of tasks to try to schedule for each invocation of the scheduler
-  * `-level gpu=2`: to see some logging about GPU distances
+  * log level `0` is everything, `5` is errors only
+    * `-level gpu=2`: to see some logging about GPU distances
+    * `-level node_aware_must_epoch_mapper=1` to see some debug messages from the Mapper
+
 
 
 ## Files
@@ -70,6 +76,7 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
 
 * `map_must_epoch`
   * [MappingConstraint, MapMustEpochInput, MapMustEpochOutput](https://github.com/StanfordLegion/legion/blob/f3f4e7d987768598b554ffca65d730f697956dc8/runtime/legion/legion_mapping.h#L1406)
+    * `MappingConstraint` which logical regions of different tasks must be mapped to the same physical instance
   * [Legion Mapper API](https://legion.stanford.edu/mapper/index.html)
 
 ## Legion Concepts

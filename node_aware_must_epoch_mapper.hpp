@@ -14,9 +14,8 @@
 /* assignment problem utilities */
 namespace ap {
 
-
 struct RollingStatistics {
-  RollingStatistics() {reset(); } 
+  RollingStatistics() { reset(); }
   size_t n;
   double sum_;
   double min_;
@@ -36,21 +35,18 @@ struct RollingStatistics {
     max_ = std::max(max_, d);
   }
 
-  double mean() const noexcept {return sum_ / n; }
+  double mean() const noexcept { return sum_ / n; }
   double min() const noexcept { return min_; }
   double max() const noexcept { return max_; }
   double count() const noexcept { return n; }
 };
-
 
 template <unsigned N> class Extent {
   int64_t x[N];
 
 public:
   Extent() = default;
-  Extent(int64_t _x[N]) {
-    x = _x;
-  }
+  Extent(int64_t _x[N]) { x = _x; }
   Extent(Extent &&other) = default;
   Extent(const Extent &other) = default;
 
@@ -280,7 +276,7 @@ inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
     for (int64_t a = 0; a < numAgents; ++a) {
       if (std::count(f.begin(), f.end(), a) > s) {
         cardCheckFail = true;
-	break;
+        break;
       }
     }
     if (cardCheckFail) {
@@ -299,7 +295,9 @@ inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
     *costp = bestCost;
   }
 
-  std::cerr << "Considered " << stats.count() << " placements: min=" << stats.min() << " avg=" << stats.mean() << " max=" << stats.max() << "\n";
+  std::cerr << "Considered " << stats.count()
+            << " placements: min=" << stats.min() << " avg=" << stats.mean()
+            << " max=" << stats.max() << "\n";
 
   return bestF;
 }
@@ -308,6 +306,8 @@ inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
 
 using namespace Legion;
 using namespace Legion::Mapping;
+
+Logger log_mapper("node_aware_must_epoch_mapper");
 
 class NodeAwareMustEpochMapper : public DefaultMapper {
 public:
@@ -373,11 +373,16 @@ bool NodeAwareMustEpochMapper::has_gpu_variant(const MapperContext ctx,
 void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
                                               const MapMustEpochInput &input,
                                               MapMustEpochOutput &output) {
-  printf("NodeAwareMustEpochMapper::%s(): [entry]\n", __FUNCTION__);
+  log_mapper.debug("%s(): [entry]", __FUNCTION__);
 
   // ensure all tasks can run on GPU
   for (const auto &task : input.tasks) {
-    assert(has_gpu_variant(ctx, task->task_id));
+    bool ok = has_gpu_variant(ctx, task->task_id);
+    if (!ok) {
+      log_mapper.error("NodeAwareMustEpochMapper error: a task without a "
+                       "TOC_PROC variant cannot be mapped.");
+      assert(false);
+    }
   }
 
   /* MappingConstraint says that certain logical regions must be in the same
@@ -410,8 +415,8 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     TaskGroup group = {task};
     groups.push_back(group);
   }
-  printf("NodeAwareMustEpochMapper::%s(): %lu task groups after tasks\n",
-         __FUNCTION__, groups.size());
+  log_mapper.debug("%s(): %lu task groups after tasks", __FUNCTION__,
+                   groups.size());
 
   // which logical region in each task must be mapped to the same physical
   // instance
@@ -427,8 +432,8 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     }
     groups.push_back(group);
   }
-  printf("NodeAwareMustEpochMapper::%s(): %lu task groups after constraints\n",
-         __FUNCTION__, groups.size());
+  log_mapper.debug("%s(): %lu task groups after constraints", __FUNCTION__,
+                   groups.size());
 
   // iteratively merge any groups that have the same task
   bool changed = true;
@@ -454,8 +459,11 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
       groups.erase(srci);
     }
   }
-  printf("NodeAwareMustEpochMapper::%s(): %lu task groups after merge\n",
-         __FUNCTION__, groups.size());
+
+  log_mapper.debug("%s(): %lu task groups after merge", __FUNCTION__,
+                   groups.size());
+  for (size_t gi = 0; gi < groups.size(); ++gi) {
+  }
 
   assert(groups.size() <= input.tasks.size() && "at worst, one task per group");
 
@@ -645,12 +653,18 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     }
   }
 
-  // find the best FB for each GPU
-  std::map<Processor, Memory> gpuFbs;
+  // the closest FB for each GPU
+  struct ProcMemPair {
+    Processor gpu;
+    Memory fb;
+  };
+  std::vector<ProcMemPair> gpus;
   {
+    // find the highest-bandwidth fb each GPU has access to
     std::map<Processor, Machine::ProcessorMemoryAffinity> best;
-    for( auto &aff : procMemAffinities) {
-      if (aff.p.kind() == Processor::TOC_PROC && aff.m.kind() == Memory::GPU_FB_MEM){
+    for (auto &aff : procMemAffinities) {
+      if (aff.p.kind() == Processor::TOC_PROC &&
+          aff.m.kind() == Memory::GPU_FB_MEM) {
         auto it = best.find(aff.p);
         if (it != best.end()) {
           if (aff.bandwidth > it->second.bandwidth) {
@@ -662,16 +676,19 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
       }
     }
 
-    for (auto &kv: best) {
+    size_t i = 0;
+    for (auto &kv : best) {
       assert(kv.first == kv.second.p);
-      std::cerr << "best " << kv.first << " " << kv.second.m << "\n";
-      	    gpuFbs[kv.first] = kv.second.m;
       assert(kv.first.kind() == Processor::TOC_PROC);
       assert(kv.second.m.kind() == Memory::GPU_FB_MEM);
+      std::cerr << "best " << kv.first << " " << kv.second.m << "\n";
+      ProcMemPair pmp;
+      pmp.gpu = kv.first;
+      pmp.fb = kv.second.m;
+      gpus.push_back(pmp);
+      ++i;
     }
-
   }
-
 
   printf("NodeAwareMustEpochMapper::%s(): GPU memory-memory affinities\n",
          __FUNCTION__);
@@ -683,23 +700,22 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   }
 
   /* build the distance matrix */
-  assert(gpuFbs.size() > 0);
-  ap::Mat2D<double> distance(gpuFbs.size(), gpuFbs.size(), 0);
+  ap::Mat2D<double> distance(gpus.size(), gpus.size(), 0);
   {
     size_t i = 0;
-    for (auto &src : gpuFbs) {
+    for (auto &src : gpus) {
       size_t j = 0;
-      for (auto &dst : gpuFbs) {
+      for (auto &dst : gpus) {
 
-        std::cerr << "looking for mma " << src.second << " " << dst.second << "\n";
+        std::cerr << "looking for mma " << src.fb << " " << dst.fb << "\n";
 
         // TODO: self distance is 0
-        if (src == dst) {
+        if (src.gpu == dst.gpu) {
           distance.at(i, j) = 0;
         } else {
           bool found = false;
           for (auto &mma : memMemAffinities) {
-            if (mma.m1 == src.second && mma.m2 == dst.second) {
+            if (mma.m1 == src.fb && mma.m2 == dst.fb) {
               distance.at(i, j) = 1.0 / mma.bandwidth;
               found = true;
               break;
@@ -749,7 +765,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   // if more tasks than agents, distribute tasks
   // if more agents than tasks, max of one task per agent
   // TODO: for a must-epoch task, we should never have more tasks than agents
-  int64_t cardinality = (overlap.size() + gpuFbs.size() - 1) / gpuFbs.size();
+  const int64_t cardinality = (overlap.size() + gpus.size() - 1) / gpus.size();
   printf("NodeAwareMustEpochMapper::%s(): max cardinality %ld\n", __FUNCTION__,
          cardinality);
 
@@ -770,9 +786,82 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   std::cerr << "\n";
   printf("NodeAwareMustEpochMapper::%s(): cost was %f\n", __FUNCTION__, cost);
 
+  // copy the mapping to the output
+  std::map<const Task *, Processor> procMap;
+  for (size_t gi = 0; gi < groups.size(); ++gi) {
+    for (const Task *task : groups[gi]) {
+      procMap[task] = gpus[assignment[gi]].gpu;
+    }
+  }
+  for (unsigned i = 0; i < input.tasks.size(); ++i) {
+    output.task_processors[i] = procMap[input.tasks[i]];
+  }
+
+  // map all constraints.
+  // BEGIN: lifted from default mapper
+  // Now let's map the constraints, find one requirement to use for
+  // mapping each of the constraints, but get the set of fields we
+  // care about and the set of logical regions for all the requirements
+  for (unsigned cid = 0; cid < input.constraints.size(); cid++) {
+
+    const MappingConstraint &constraint = input.constraints[cid];
+    std::vector<PhysicalInstance> &constraint_mapping =
+        output.constraint_mappings[cid];
+    std::set<LogicalRegion> needed_regions;
+    std::set<FieldID> needed_fields;
+    for (unsigned idx = 0; idx < constraint.constrained_tasks.size(); idx++) {
+
+      const Task *task = constraint.constrained_tasks[idx];
+      unsigned req_idx = constraint.requirement_indexes[idx];
+      log_mapper.debug("input constraint %u: task %u region %u", cid,
+                       task->task_id, req_idx);
+      needed_regions.insert(task->regions[req_idx].region);
+      needed_fields.insert(task->regions[req_idx].privilege_fields.begin(),
+                           task->regions[req_idx].privilege_fields.end());
+    }
+
+    // Now delegate to a policy routine to decide on a memory and layout
+    // constraints for this constrained instance
+    std::vector<Processor> target_procs;
+    for (std::vector<const Task *>::const_iterator it =
+             constraint.constrained_tasks.begin();
+         it != constraint.constrained_tasks.end(); ++it)
+      target_procs.push_back(procMap[*it]);
+    LayoutConstraintSet layout_constraints;
+    layout_constraints.add_constraint(
+        FieldConstraint(needed_fields, false /*!contiguous*/));
+    Memory mem = default_policy_select_constrained_instance_constraints(
+        ctx, constraint.constrained_tasks, constraint.requirement_indexes,
+        target_procs, needed_regions, needed_fields, layout_constraints);
+
+    LogicalRegion to_create =
+        ((needed_regions.size() == 1)
+             ? *(needed_regions.begin())
+             : default_find_common_ancestor(ctx, needed_regions));
+    PhysicalInstance inst;
+    bool created;
+    bool ok = runtime->find_or_create_physical_instance(
+        ctx, mem, layout_constraints, std::vector<LogicalRegion>(1, to_create),
+        inst, created, true /*acquire*/);
+    assert(ok);
+    if (!ok) {
+      log_mapper.error("Default mapper error. Unable to make instance(s) "
+                       "in memory " IDFMT " for index %d of constrained "
+                       "task %s (ID %lld) in must epoch launch.",
+                       mem.id, constraint.requirement_indexes[0],
+                       constraint.constrained_tasks[0]->get_task_name(),
+                       constraint.constrained_tasks[0]->get_unique_id());
+      assert(false);
+    }
+    constraint_mapping.push_back(inst);
+  }
+  // END: lifted from default mapper
+
+#if 0
   printf("NodeAwareMustEpochMapper::%s(): actually just use "
          "DefaultMapper::map_must_epoch()\n",
          __FUNCTION__);
   DefaultMapper::map_must_epoch(ctx, input, output);
+#endif
   printf("NodeAwareMustEpochMapper::%s(): [exit]\n", __FUNCTION__);
 }
