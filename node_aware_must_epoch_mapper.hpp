@@ -105,22 +105,6 @@ public:
   Mat2D(Extent<2> s) : Mat2D(s[0], s[1]) {}
   Mat2D(Extent<2> s, const T &val) : Mat2D(s[0], s[1], val) {}
 
-  Mat2D(const std::initializer_list<std::initializer_list<T>> &ll) : Mat2D() {
-
-    if (ll.size() > 0) {
-      resize(ll.begin()->size(), ll.size());
-    }
-
-    auto llit = ll.begin();
-    for (size_t i = 0; i < rect_[1]; ++i, ++llit) {
-      assert(llit->size() == rect_[0]);
-      auto lit = llit->begin();
-      for (size_t j = 0; j < rect_[0]; ++j, ++lit) {
-        at(i, j) = *lit;
-      }
-    }
-  }
-
   Mat2D(const Mat2D &other) = default;
   Mat2D &operator=(const Mat2D &rhs) = default;
   Mat2D(Mat2D &&other) = default;
