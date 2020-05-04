@@ -376,7 +376,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
                                               const MapMustEpochInput &input,
                                               MapMustEpochOutput &output) {
   nvtxRangePush("NodeAwareMustEpochMapper::map_must_epoch");
-      	log_mapper.debug("%s(): [entry]", __FUNCTION__);
+  log_mapper.debug("%s(): [entry]", __FUNCTION__);
 
   // ensure all tasks can run on GPU
   for (const auto &task : input.tasks) {
@@ -629,11 +629,13 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     return bytes;
   };
 
+  nvtxRangePush("get_overlap");
   for (size_t i = 0; i < groups.size(); ++i) {
     for (size_t j = 0; j < groups.size(); ++j) {
       overlap[i][j] = get_overlap(groups[i], groups[j]);
     }
   }
+  nvtxRangePop();
   printf("NodeAwareMustEpochMapper::%s(): task-group overlap matrix\n",
          __FUNCTION__);
   for (auto &src : overlap) {
@@ -661,6 +663,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     Processor gpu;
     Memory fb;
   };
+  nvtxRangePush("closest GPU & FB");
   std::vector<ProcMemPair> gpus;
   {
     // find the highest-bandwidth fb each GPU has access to
@@ -692,6 +695,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
       ++i;
     }
   }
+  nvtxRangePop(); // "closest GPU & FB"
 
   printf("NodeAwareMustEpochMapper::%s(): GPU memory-memory affinities\n",
          __FUNCTION__);
@@ -703,6 +707,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   }
 
   /* build the distance matrix */
+  nvtxRangePush("distance matrix");
   ap::Mat2D<double> distance(gpus.size(), gpus.size(), 0);
   {
     size_t i = 0;
@@ -724,13 +729,17 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
               break;
             }
           }
-          assert(found && "couldn't find mem-mem affinity for GPU FBs");
+          if (!found) {
+            log_mapper.error("couldn't find mem-mem affinity for GPU FBs");
+          }
+          assert(false);
         }
         ++j;
       }
       ++i;
     }
   }
+  nvtxRangePop(); // distance matrix
 
   printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
   for (size_t i = 0; i < distance.shape()[1]; ++i) {
@@ -774,9 +783,11 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
 
   // TODO: for a must-epoch task, we should never have more tasks than agents,
   // so solve_ap only needs to work for distance >= weight
+  nvtxRangePush("solve_ap");
   double cost;
   std::vector<size_t> assignment =
       ap::solve_ap(&cost, weight, distance, cardinality);
+  nvtxRangePop(); // solve_ap
   if (assignment.empty()) {
     std::cerr << "couldn't find an assignment\n";
     exit(1);
@@ -869,5 +880,4 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   printf("NodeAwareMustEpochMapper::%s(): [exit]\n", __FUNCTION__);
 
   nvtxRangePop(); // NodeAwareMustEpochMapper::map_must_epoch
-
 }
