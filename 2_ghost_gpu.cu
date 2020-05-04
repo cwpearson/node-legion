@@ -13,12 +13,14 @@
 #include "node_aware_must_epoch_mapper.hpp"
 #endif
 
+// be noisy
+// #define DEBUG_STENCIL_CALC
+
 // allow this to run multiple tasks on a single proc (for development)
 #define DISABLE_NUM_LOC_PROCS_CHECK
 
 using namespace Legion;
 
-#define DEBUG_STENCIL_CALC
 #define ORDER 2
 
 /* Need this special kind of GPU accessor for some reason?
@@ -459,13 +461,17 @@ __global__ void init_kernel(Rect<1> rect, AccessorWDdouble acc) {
   Point<1> last = rect.hi;
 
   if (0 == tid) {
+#ifdef DEBUG_STENCIL_CALC
     printf("init_kernel() last=%d first=%d\n", int(last), int(first));
+#endif
   }
 
   if (first + tid <= last) {
     double d =
         double(first[0] + tid) + ripple[(first[0] + tid) % ripple_period];
+#ifdef DEBUG_STENCIL_CALC
     printf("init_kernel() tid=%d acc[%d]=%f\n", tid, int(first + tid), d);
+#endif
     acc[first + tid] = d;
   }
 #endif
