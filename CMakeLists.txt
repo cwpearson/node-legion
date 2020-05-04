@@ -29,6 +29,7 @@ target_link_libraries(1-multiple Legion::Legion)
 
 add_executable(2-ghost-gpu 2_ghost_gpu.cu)
 target_link_libraries(2-ghost-gpu Legion::Legion)
+target_link_libraries(2-ghost-gpu nvToolsExt)
 
 add_executable(print-machine print_machine.cpp)
 target_link_libraries(print-machine Legion::Legion)

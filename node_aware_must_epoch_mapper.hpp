@@ -11,6 +11,8 @@
 
 #include "default_mapper.h"
 
+#include <nvToolsExt.h>
+
 /* assignment problem utilities */
 namespace ap {
 
@@ -373,7 +375,8 @@ bool NodeAwareMustEpochMapper::has_gpu_variant(const MapperContext ctx,
 void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
                                               const MapMustEpochInput &input,
                                               MapMustEpochOutput &output) {
-  log_mapper.debug("%s(): [entry]", __FUNCTION__);
+  nvtxRangePush("NodeAwareMustEpochMapper::map_must_epoch");
+      	log_mapper.debug("%s(): [entry]", __FUNCTION__);
 
   // ensure all tasks can run on GPU
   for (const auto &task : input.tasks) {
@@ -864,4 +867,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   DefaultMapper::map_must_epoch(ctx, input, output);
 #endif
   printf("NodeAwareMustEpochMapper::%s(): [exit]\n", __FUNCTION__);
+
+  nvtxRangePop(); // NodeAwareMustEpochMapper::map_must_epoch
+
 }
