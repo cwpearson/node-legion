@@ -661,6 +661,59 @@ void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
 #endif
 }
 
+__global__ void check_kernel(int *errors, const AccessorROdouble acc, const Rect<1> rect,
+                             const int numElements) {
+
+  const int tid = blockDim.x * blockIdx.x + threadIdx.x;
+
+  int myErrors = 0;
+
+  const int ripple_period = 4;
+  const double deriv_ripple[ripple_period] = {4.0, 0, -4.0, 0};
+
+  for (auto idx = rect.lo + tid; idx <= rect.hi;
+       idx += gridDim.x + blockDim.x) {
+
+    double exp_value = 12.0 + deriv_ripple[int(acc[idx]) % ripple_period];
+
+    // correct for the wraparound cases
+    if (acc[idx] < ORDER) {
+      // again only actually supporting ORDER == 2
+      assert(ORDER == 2);
+      if (acc[idx] == 0)
+        exp_value += -7.0 * numElements;
+      if (acc[idx] == 1)
+        exp_value += 1.0 * numElements;
+    }
+    if (acc[idx] >= (numElements - ORDER)) {
+      // again only actually supporting ORDER == 2
+      assert(ORDER == 2);
+      if (acc[idx] == (numElements - 1))
+        exp_value += -7.0 * numElements;
+      if (acc[idx] == (numElements - 2))
+        exp_value += 1.0 * numElements;
+    }
+
+    double act_value = acc[idx];
+
+    // polarity is important here - comparisons with NaN always return false
+    bool ok =
+        ((exp_value < 0) ? ((-act_value >= 0.99 * -exp_value) &&
+                            (-act_value <= 1.01 * -exp_value))
+                         : (exp_value > 0) ? ((act_value >= 0.99 * exp_value) &&
+                                              (act_value <= 1.01 * exp_value))
+                                           : (act_value == 0));
+
+    if (!ok) {
+      ++myErrors;
+    }
+  }
+
+  if (errors) {
+    atomicAdd(errors, myErrors);
+  }
+}
+
 int check_task(const Task *task, const std::vector<PhysicalRegion> &regions,
                Context ctx, Runtime *runtime) {
   SPMDArgs *args = (SPMDArgs *)task->args;
@@ -671,11 +724,32 @@ int check_task(const Task *task, const std::vector<PhysicalRegion> &regions,
 
   FieldID fid = *(task->regions[0].privilege_fields.begin());
 
-  const FieldAccessor<READ_ONLY, double, 1> acc(regions[0], fid);
-
   Rect<1> rect = runtime->get_index_space_domain(
       ctx, task->regions[0].region.get_index_space());
   int errors = 0;
+
+// GPU code
+#if 1
+  int *dErrors;
+  cudaMalloc(&dErrors, sizeof(int));
+  cudaMemset(dErrors, 0, sizeof(int));
+
+  AccessorROdouble acc(regions[0], fid);
+
+  dim3 dimBlock(256);
+  dim3 dimGrid((rect.hi - rect.lo + 1 + dimBlock.x - 1) / dimBlock.x);
+
+  check_kernel<<<dimGrid, dimBlock>>>(dErrors, acc, rect, args->num_elements);
+
+  cudaMemcpy(&errors, dErrors, sizeof(int), cudaMemcpyDeviceToHost);
+
+  if (errors) {
+    printf("ERROR: GPU check failed.\n");
+  }
+
+#else // original CPU code
+  const FieldAccessor<READ_ONLY, double, 1> acc(regions[0], fid);
+
   for (PointInRectIterator<1> pir(rect); pir(); pir++) {
     // the derivative of a ramp with ripples is a constant function with
     // ripples
@@ -717,6 +791,7 @@ int check_task(const Task *task, const std::vector<PhysicalRegion> &regions,
       errors++;
     }
   }
+#endif
 
   return errors;
 }
