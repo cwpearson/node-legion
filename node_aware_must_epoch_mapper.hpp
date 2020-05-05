@@ -731,8 +731,8 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
           }
           if (!found) {
             log_mapper.error("couldn't find mem-mem affinity for GPU FBs");
+            assert(false);
           }
-          assert(false);
         }
         ++j;
       }
