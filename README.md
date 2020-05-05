@@ -71,6 +71,7 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
 
 * Mappers
   * [Legion Mapper API](https://legion.stanford.edu/mapper/index.html)
+  * [Custom Mapper Tutorial](https://legion.stanford.edu/tutorial/custom_mappers.html)
   * [Machine Query Interface](https://github.com/StanfordLegion/legion/blob/stable/runtime/mappers/mapping_utilities.cc)
 
 

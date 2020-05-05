@@ -317,12 +317,33 @@ public:
                            const char *mapper_name);
 
 public:
+  /*
+  If a mapper has one or more tasks that are ready to execute it calls
+  select_tasks_to_map. This method can copy tasks to the map_tasks list to
+  indicate the task should be mapped by this mapper. The method can copy tasks
+  to the relocate_tasks list to indicate the task should be mapped by a mapper
+  for a different processor. If it does neither the task stays in the ready
+  list.
+  */
+  virtual void select_tasks_to_map(const MapperContext ctx,
+                                   const SelectMappingInput &input,
+                                   SelectMappingOutput &output);
+
+  virtual void map_task(const MapperContext ctx, const Task &task,
+                        const MapTaskInput &input, MapTaskOutput &output);
+
   /* Do some node-aware must-epoch mapping
 
   */
   virtual void map_must_epoch(const MapperContext ctx,
                               const MapMustEpochInput &input,
                               MapMustEpochOutput &output);
+
+  /* NodeAwareMustEpochMapper requests the runtime calls this
+    when the task is finished
+  */
+  virtual void postmap_task(const MapperContext ctx, const Task &task,
+                            const PostMapInput &input, PostMapOutput &output);
 
   /* Replace the default mapper with a NodeAwareMustEpochMapper
 
@@ -372,11 +393,68 @@ bool NodeAwareMustEpochMapper::has_gpu_variant(const MapperContext ctx,
   return false;
 }
 
+/*
+This method can copy tasks to the map_tasks list to indicate the task should be
+mapped by this mapper. The method can copy tasks to the relocate_tasks list to
+indicate the task should be mapped by a mapper for a different processor. If it
+does neither the task stays in the ready list.
+*/
+void NodeAwareMustEpochMapper::select_tasks_to_map(
+    const MapperContext ctx, const SelectMappingInput &input,
+    SelectMappingOutput &output) {
+
+  log_mapper.spew("select_tasks_to_map");
+
+  for (const Task *task : input.ready_tasks) {
+    log_mapper.spew("task %u", task->task_id);
+  }
+
+  // just take all tasks
+  log_mapper.debug("%s(): selecting %lu tasks\n", __FUNCTION__,
+                   input.ready_tasks.size());
+  for (const Task *task : input.ready_tasks) {
+    output.map_tasks.insert(task);
+  }
+}
+
+void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
+                                        const Task &task,
+                                        const MapTaskInput &input,
+                                        MapTaskOutput &output) {
+  nvtxRangePush("NodeAwareMustEpochMapper::map_task");
+  if (task.target_proc.kind() == Processor::TOC_PROC) {
+
+    log_mapper.spew("task %u", task.task_id);
+    std::cerr << "parent: " << task.parent_task << "\n";
+
+    /* some regions may already be mapped
+     */
+    std::vector<bool> premapped(task.regions.size(), false);
+    for (unsigned idx = 0; idx < input.premapped_regions.size(); idx++) {
+      unsigned index = input.premapped_regions[idx];
+      output.chosen_instances[index] = input.valid_instances[index];
+      premapped[index] = true;
+      printf("region %u is premapped\n", index);
+    }
+  }
+
+  DefaultMapper::map_task(ctx, task, input, output);
+
+  // get the runtime to call `postmap_task` when the task finishes running
+  output.postmap_task = true;
+  nvtxRangePop();
+}
+
 void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
                                               const MapMustEpochInput &input,
                                               MapMustEpochOutput &output) {
   nvtxRangePush("NodeAwareMustEpochMapper::map_must_epoch");
   log_mapper.debug("%s(): [entry]", __FUNCTION__);
+
+  for (const auto &task : input.tasks) {
+    log_mapper.spew("task %u", task->task_id);
+  }
+
 
   // ensure all tasks can run on GPU
   for (const auto &task : input.tasks) {
@@ -687,7 +765,9 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
       assert(kv.first == kv.second.p);
       assert(kv.first.kind() == Processor::TOC_PROC);
       assert(kv.second.m.kind() == Memory::GPU_FB_MEM);
-      std::cerr << "best " << kv.first << " " << kv.second.m << "\n";
+      log_mapper.spew() << "proc " << kv.first << ": closes mem=" << kv.second.m
+                        << " bw=" << kv.second.bandwidth
+                        << "latency=" << kv.second.latency;
       ProcMemPair pmp;
       pmp.gpu = kv.first;
       pmp.fb = kv.second.m;
@@ -697,13 +777,20 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   }
   nvtxRangePop(); // "closest GPU & FB"
 
+  /* print our GPU number
+   */
+  for (size_t i = 0; i < gpus.size(); ++i) {
+    log_mapper.debug() << "GPU index " << i << "proc:" << gpus[i].gpu
+                       << "/mem:" << gpus[i].fb;
+  }
+
   printf("NodeAwareMustEpochMapper::%s(): GPU memory-memory affinities\n",
          __FUNCTION__);
   std::vector<Machine::MemoryMemoryAffinity> memMemAffinities;
   machine.get_mem_mem_affinity(memMemAffinities);
   for (auto &aff : memMemAffinities) {
-    std::cerr << aff.m1 << "-" << aff.m2 << " " << aff.bandwidth << " "
-              << aff.latency << "\n";
+    log_mapper.spew() << aff.m1 << "-" << aff.m2 << " " << aff.bandwidth << " "
+                      << aff.latency;
   }
 
   /* build the distance matrix */
@@ -715,7 +802,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
       size_t j = 0;
       for (auto &dst : gpus) {
 
-        std::cerr << "looking for mma " << src.fb << " " << dst.fb << "\n";
+        log_mapper.spew() << "looking for mma " << src.fb << " " << dst.fb;
 
         // TODO: self distance is 0
         if (src.gpu == dst.gpu) {
@@ -880,4 +967,20 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   printf("NodeAwareMustEpochMapper::%s(): [exit]\n", __FUNCTION__);
 
   nvtxRangePop(); // NodeAwareMustEpochMapper::map_must_epoch
+}
+
+/*
+struct PostMapInput {
+  std::vector<std::vector<PhysicalInstance> >     mapped_regions;
+  std::vector<std::vector<PhysicalInstance> >     valid_instances;
+};
+
+struct PostMapOutput {
+  std::vector<std::vector<PhysicalInstance> >     chosen_instances;
+};
+*/
+void NodeAwareMustEpochMapper::postmap_task(const MapperContext ctx, const Task &task,
+                  const PostMapInput &input, PostMapOutput &output) {
+
+  log_mapper.debug() << "in NodeAwareMustEpochMapper::postmap_task";
 }
