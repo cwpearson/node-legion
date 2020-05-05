@@ -674,23 +674,23 @@ __global__ void check_kernel(int *errors, const AccessorROdouble acc, const Rect
   for (auto idx = rect.lo + tid; idx <= rect.hi;
        idx += gridDim.x + blockDim.x) {
 
-    double exp_value = 12.0 + deriv_ripple[int(acc[idx]) % ripple_period];
+    double exp_value = 12.0 + deriv_ripple[int(idx) % ripple_period];
 
     // correct for the wraparound cases
-    if (acc[idx] < ORDER) {
+    if (idx < ORDER) {
       // again only actually supporting ORDER == 2
       assert(ORDER == 2);
-      if (acc[idx] == 0)
+      if (idx == 0)
         exp_value += -7.0 * numElements;
-      if (acc[idx] == 1)
+      if (idx == 1)
         exp_value += 1.0 * numElements;
     }
-    if (acc[idx] >= (numElements - ORDER)) {
+    if (idx >= (numElements - ORDER)) {
       // again only actually supporting ORDER == 2
       assert(ORDER == 2);
-      if (acc[idx] == (numElements - 1))
+      if (idx == (numElements - 1))
         exp_value += -7.0 * numElements;
-      if (acc[idx] == (numElements - 2))
+      if (idx == (numElements - 2))
         exp_value += 1.0 * numElements;
     }
 
