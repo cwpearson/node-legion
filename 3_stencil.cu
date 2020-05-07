@@ -23,12 +23,12 @@ using namespace Legion;
 
 /* Need this special kind of GPU accessor for some reason?
  */
-typedef FieldAccessor<READ_ONLY, double, 1, coord_t,
-                      Realm::AffineAccessor<double, 1, coord_t>>
-    AccessorROdouble;
-typedef FieldAccessor<WRITE_DISCARD, double, 1, coord_t,
-                      Realm::AffineAccessor<double, 1, coord_t>>
-    AccessorWDdouble;
+typedef FieldAccessor<READ_ONLY, double, 2, coord_t,
+                      Realm::AffineAccessor<double, 2, coord_t>>
+    AccessorRO;
+typedef FieldAccessor<WRITE_DISCARD, double, 2, coord_t,
+                      Realm::AffineAccessor<double, 2, coord_t>>
+    AccessorWD;
 
 enum {
   TOP_LEVEL_TASK_ID,
@@ -63,24 +63,18 @@ public:
   int num_steps;
 };
 
-void init_task(const Task *task, const std::vector<PhysicalRegion> &regions,
-               Context ctx, Runtime *runtime) {
-
-  std::cerr << "init_task: regions.size()=" << regions.size() << "\n";
-
-  Rect<2> rect = runtime->get_index_space_domain(
-      ctx, task->regions[0].region.get_index_space());
-  std::cerr << "init_task: regions.size()=" << regions.size() << "\n";
-  const FieldID writeFid = *(task->regions[0].privilege_fields.begin());
-  const FieldAccessor<WRITE_DISCARD, double, 2> acc(regions[0], writeFid);
-
-  std::cerr << "init_task: rect=" << rect << "\n";
+__global__ void init_kernel(Rect<2> rect, AccessorWD acc) {
 
   constexpr double ripple[4] = {0, 0.25, 0, -0.25};
   constexpr size_t period = sizeof(ripple) / sizeof(ripple[0]);
 
-  for (int64_t y = rect.lo[1]; y <= rect.hi[1]; ++y) {
-    for (int64_t x = rect.lo[0]; x <= rect.hi[0]; ++x) {
+  const int tx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int ty = blockIdx.y * blockDim.y + threadIdx.y;
+
+  for (int64_t y = rect.lo[1] + ty; y <= rect.hi[1];
+       y += gridDim.y * blockDim.y) {
+    for (int64_t x = rect.lo[0] + tx; x <= rect.hi[0];
+         x += gridDim.x * blockDim.x) {
       double v = x + y + ripple[x % period] + ripple[y % period];
       Point<2> p(x, y);
       acc[p] = v;
@@ -88,6 +82,66 @@ void init_task(const Task *task, const std::vector<PhysicalRegion> &regions,
   }
 }
 
+#define INIT_TASK_CPU 0
+void init_task(const Task *task, const std::vector<PhysicalRegion> &regions,
+               Context ctx, Runtime *runtime) {
+
+  std::cerr << "init_task: regions.size()=" << regions.size() << "\n";
+
+  Rect<2> rect = runtime->get_index_space_domain(
+      ctx, task->regions[0].region.get_index_space());
+  std::cerr << "init_task: rect=" << rect << "\n";
+  const FieldID fid = *(task->regions[0].privilege_fields.begin());
+
+#if INIT_TASK_CPU
+  constexpr double ripple[4] = {0, 0.25, 0, -0.25};
+  constexpr size_t period = sizeof(ripple) / sizeof(ripple[0]);
+  const FieldAccessor<WRITE_DISCARD, double, 2> acc(regions[0], fid);
+  for (int64_t y = rect.lo[1]; y <= rect.hi[1]; ++y) {
+    for (int64_t x = rect.lo[0]; x <= rect.hi[0]; ++x) {
+      double v = x + y + ripple[x % period] + ripple[y % period];
+      Point<2> p(x, y);
+      acc[p] = v;
+    }
+  }
+#else
+  const AccessorWD acc(regions[0], fid);
+  dim3 dimBlock(32, 32);
+  dim3 dimGrid;
+  dimGrid.x = ((rect.hi[0] - rect.lo[0] + 1) + dimBlock.x - 1) / dimBlock.x;
+  dimGrid.y = ((rect.hi[1] - rect.lo[1] + 1) + dimBlock.y - 1) / dimBlock.y;
+  init_kernel<<<dimGrid, dimBlock>>>(rect, acc);
+#endif
+}
+
+__global__ void stencil_kernel(Rect<2> wrRect, Rect<2> rdRect, AccessorWD wrAcc,
+                               AccessorRO rdAcc) {
+
+  const int tx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int ty = blockIdx.y * blockDim.y + threadIdx.y;
+
+  for (int64_t y = wrRect.lo[1] + ty; y <= wrRect.hi[1];
+       y += gridDim.y + blockDim.y) {
+    for (int64_t x = wrRect.lo[0] + tx; x <= wrRect.hi[0];
+         x += gridDim.x + blockDim.x) {
+
+      if ((x - RADIUS) >= rdRect.lo[0] && (x + RADIUS) <= rdRect.hi[0] &&
+          y >= rdRect.lo[1] && y <= rdRect.hi[1]) {
+        // first derivative in x
+        double v = 0;
+        v += 1 * rdAcc[Point<2>(x - 2, y)];
+        v += -8 * rdAcc[Point<2>(x - 1, y)];
+        v += -1 * rdAcc[Point<2>(x + 2, y)];
+        v += 8 * rdAcc[Point<2>(x + 1, y)];
+        v /= 12;
+        Point<2> p(x, y);
+        wrAcc[p] = v;
+      }
+    }
+  }
+}
+
+#define STENCIL_TASK_CPU 0
 void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
                   Context ctx, Runtime *runtime) {
 
@@ -103,6 +157,7 @@ void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
   std::cerr << "stencil_task: rdRect=" << rdRect << " wrRect=" << wrRect
             << "\n";
 
+#if STENCIL_TASK_CPU
   const FieldAccessor<READ_ONLY, double, 2> rdAcc(regions[0], readFid);
   const FieldAccessor<WRITE_DISCARD, double, 2> wrAcc(regions[1], writeFid);
 
@@ -115,7 +170,7 @@ void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
     }
     std::cerr << "\n";
   }
-#endif
+#endif // STENCIL_TASK_DUMP_INPUT
 
 #if 1
   for (int64_t y = wrRect.lo[1]; y <= wrRect.hi[1]; ++y) {
@@ -137,6 +192,17 @@ void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
     }
   }
 #endif
+
+#else
+  const AccessorRO rdAcc(regions[0], readFid);
+  const AccessorWD wrAcc(regions[1], writeFid);
+  dim3 dimBlock(32, 32);
+  dim3 dimGrid;
+  dimGrid.x = ((wrRect.hi[0] - wrRect.lo[0] + 1) + dimBlock.x - 1) / dimBlock.x;
+  dimGrid.y = ((wrRect.hi[1] - wrRect.lo[1] + 1) + dimBlock.y - 1) / dimBlock.y;
+  stencil_kernel<<<dimGrid, dimBlock>>>(wrRect, rdRect, wrAcc, rdAcc);
+
+#endif // STENCIL_TASK_CPU
 }
 
 LogicalPartition create_halo_partition(Context ctx, LogicalRegion lr,
@@ -245,7 +311,8 @@ void top_level_task(const Task *task,
 
   Point<2> tileSz;
   for (int dim = 0; dim < 2; ++dim) {
-    tileSz[dim] = (numElements[dim] + numSubregions[dim] - 1) / numSubregions[dim];
+    tileSz[dim] =
+        (numElements[dim] + numSubregions[dim] - 1) / numSubregions[dim];
   }
 
   for (int y = 0; y < numSubregions[1]; ++y) {
