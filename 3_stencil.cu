@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <iomanip>
 #include <unistd.h>
 
 // use the Node Aware Must Epoch Mapper
@@ -63,7 +64,29 @@ public:
 };
 
 void init_task(const Task *task, const std::vector<PhysicalRegion> &regions,
-               Context ctx, Runtime *runtime) {}
+               Context ctx, Runtime *runtime) {
+
+  std::cerr << "init_task: regions.size()=" << regions.size() << "\n";
+
+  Rect<2> rect = runtime->get_index_space_domain(
+      ctx, task->regions[0].region.get_index_space());
+  std::cerr << "init_task: regions.size()=" << regions.size() << "\n";
+  const FieldID writeFid = *(task->regions[0].privilege_fields.begin());
+  const FieldAccessor<WRITE_DISCARD, double, 2> acc(regions[0], writeFid);
+
+  std::cerr << "init_task: rect=" << rect << "\n";
+
+  constexpr double ripple[4] = {0, 0.25, 0, -0.25};
+  constexpr size_t period = sizeof(ripple) / sizeof(ripple[0]);
+
+  for (int64_t y = rect.lo[1]; y < rect.hi[1]; ++y) {
+    for (int64_t x = rect.lo[0]; x < rect.hi[0]; ++x) {
+      double v = x + y + ripple[x % period] + ripple[y % period];
+      Point<2> p(x, y);
+      acc[p] = v;
+    }
+  }
+}
 
 void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
                   Context ctx, Runtime *runtime) {
@@ -73,12 +96,44 @@ void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
   FieldID readFid = *(task->regions[0].privilege_fields.begin());
   FieldID writeFid = *(task->regions[1].privilege_fields.begin());
 
-  Rect<2> readRect = runtime->get_index_space_domain(
+  Rect<2> rdRect = runtime->get_index_space_domain(
       ctx, task->regions[0].region.get_index_space());
-  Rect<2> writeRect = runtime->get_index_space_domain(
+  Rect<2> wrRect = runtime->get_index_space_domain(
       ctx, task->regions[1].region.get_index_space());
-  std::cerr << "stencil_task: readRect=" << readRect
-            << " writeRect=" << writeRect << "\n";
+  std::cerr << "stencil_task: rdRect=" << rdRect << " wrRect=" << wrRect
+            << "\n";
+
+  const FieldAccessor<READ_ONLY, double, 2> rdAcc(regions[0], readFid);
+  const FieldAccessor<WRITE_DISCARD, double, 2> wrAcc(regions[1], writeFid);
+
+  for (int64_t y = rdRect.lo[1]; y < rdRect.hi[1]; ++y) {
+    for (int64_t x = rdRect.lo[0]; x < rdRect.hi[0]; ++x) {
+      Point<2> p(x, y);
+      std::cerr << std::setw(6) << rdAcc[p] << " ";
+    }
+    std::cerr << "\n";
+  }
+
+#if 0
+  for (int64_t y = wrRect.lo[1]; y < wrRect.hi[1]; ++y) {
+    for (int64_t x = wrRect.lo[0]; x < wrRect.hi[0]; ++x) {
+
+      if ((x - 2) >= rdRect.lo[0] && (x + 2) <= rdRect.hi[0] &&
+          y >= rdRect.lo[1] && y <= rdRect.hi[1]) {
+        // first derivative in x
+        double v = 0;
+        v += 1 * rdAcc[Point<2>(x - 2, y)];
+        v += -8 * rdAcc[Point<2>(x - 1, y)];
+        v += -1 * rdAcc[Point<2>(x + 2, y)];
+        v += 8 * rdAcc[Point<2>(x + 1, y)];
+        v /= 12;
+        Point<2> p (x,y);
+        wrAcc[p] = v;
+        std::cerr << p << " " << v << "\n";
+      }
+    }
+  }
+#endif
 }
 
 LogicalPartition create_halo_partition(Context ctx, LogicalRegion lr,
@@ -107,10 +162,9 @@ LogicalPartition create_halo_partition(Context ctx, LogicalRegion lr,
     }
   }
 
-
   // set all partitions to be empty
-  Point<2> lo(1,1);
-  Point<2> hi(0,0);
+  Point<2> lo(1, 1);
+  Point<2> hi(0, 0);
   for (int color = GHOST_LEFT; color <= GHOST_BOT; ++color) {
     coloring[color] = Rect<2>(lo, hi);
   }
@@ -119,7 +173,7 @@ LogicalPartition create_halo_partition(Context ctx, LogicalRegion lr,
     Rect<2> rect(bbLo, bbHi);
     coloring[PRIVATE] = rect;
   }
-  if (bbLo[0] > 0 ) {
+  if (bbLo[0] > 0) {
     Rect<2> rect(isRect.lo, Point<2>(bbLo[0] - 1, isRect.hi[1]));
     coloring[GHOST_LEFT] = rect;
   }
@@ -131,7 +185,7 @@ LogicalPartition create_halo_partition(Context ctx, LogicalRegion lr,
     Rect<2> rect(isRect.lo, Point<2>(isRect.hi[0], bbLo[1] - 1));
     coloring[GHOST_TOP] = rect;
   }
-  if (bbHi[1] < numElements[1] - 1){
+  if (bbHi[1] < numElements[1] - 1) {
     Rect<2> rect(Point<2>(isRect.lo[0], bbHi[1] + 1), isRect.hi);
     coloring[GHOST_BOT] = rect;
   }
@@ -144,9 +198,10 @@ LogicalPartition create_halo_partition(Context ctx, LogicalRegion lr,
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   // these ghost regions overlap in the corners, so they are not disjoint
-  // https://github.com/magnatelee/PRK/blob/master/LEGION/Stencil/stencil.cc#L614 seems to be an error
-  IndexPartition ip = runtime->create_index_partition(ctx, is, colorSpace,
-                                                      coloring);
+  // https://github.com/magnatelee/PRK/blob/master/LEGION/Stencil/stencil.cc#L614
+  // seems to be an error
+  IndexPartition ip =
+      runtime->create_index_partition(ctx, is, colorSpace, coloring);
 #pragma GCC diagnostic pop
   return runtime->get_logical_partition(ctx, lr, ip);
 }
@@ -155,7 +210,7 @@ void top_level_task(const Task *task,
                     const std::vector<PhysicalRegion> &regions, Context ctx,
                     Runtime *runtime) {
 
-  Point<2> numElements(1024 /*x*/, 1024 /*y*/);
+  Point<2> numElements(16 /*x*/, 16 /*y*/);
   Point<2> numSubregions(2, 2);
   int num_steps = 10;
   // Check for any command line arguments
@@ -196,9 +251,12 @@ void top_level_task(const Task *task,
     }
   }
 
-  // overlapping partitions of the index space, including the halo regions
+// overlapping partitions of the index space, including the halo regions
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   IndexPartition haloIp =
       runtime->create_index_partition(ctx, is, colorSpace, haloColoring);
+#pragma GCC diagnostic pop
 
   /* create regions
    */
@@ -223,32 +281,32 @@ void top_level_task(const Task *task,
     }
   }
 
-  for (int n = 0; n < 3; ++n) {
+  // initialize data
+  for (int y = 0; y < numSubregions[1]; ++y) {
+    for (int x = 0; x < numSubregions[0]; ++x) {
+
+      Point<2> taskPoint(x, y);
+      TaskLauncher init_launcher(INIT_TASK_ID, TaskArgument(NULL, 0));
+
+      // write-discard access to center region in output
+      {
+        LogicalRegion reg = runtime->get_logical_subregion_by_color(
+            ctx, logicalPartitions[taskPoint], PRIVATE);
+        RegionRequirement req(reg, WRITE_DISCARD, EXCLUSIVE,
+                              logicalRegions[taskPoint]);
+        req.add_field(FID_OUT);
+        init_launcher.add_region_requirement(req);
+      }
+
+      std::cerr << "init task for " << taskPoint << "\n";
+      runtime->execute_task(ctx, init_launcher);
+    }
+  }
+
+  for (int n = 0; n < 1; ++n) {
     std::cerr << "iteration " << n << "\n";
 
     std::map<Point<2>, Future> futs;
-
-    // initialize data
-    for (int y = 0; y < numSubregions[1]; ++y) {
-      for (int x = 0; x < numSubregions[0]; ++x) {
-
-        Point<2> taskPoint(x, y);
-        TaskLauncher init_launcher(INIT_TASK_ID, TaskArgument(NULL, 0));
-
-        // write-discard access to center region in output
-        {
-          LogicalRegion reg = runtime->get_logical_subregion_by_color(
-              ctx, logicalPartitions[taskPoint], PRIVATE);
-          RegionRequirement req(reg, WRITE_DISCARD, EXCLUSIVE,
-                                logicalRegions[taskPoint]);
-          req.add_field(FID_OUT);
-          init_launcher.add_region_requirement(req);
-        }
-
-        std::cerr << "init task for " << taskPoint << "\n";
-        runtime->execute_task(ctx, init_launcher);
-      }
-    }
 
     // copy private FID_OUT the private region of FID_IN
     for (int y = 0; y < numSubregions[1]; ++y) {
