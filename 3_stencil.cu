@@ -79,8 +79,8 @@ void init_task(const Task *task, const std::vector<PhysicalRegion> &regions,
   constexpr double ripple[4] = {0, 0.25, 0, -0.25};
   constexpr size_t period = sizeof(ripple) / sizeof(ripple[0]);
 
-  for (int64_t y = rect.lo[1]; y < rect.hi[1]; ++y) {
-    for (int64_t x = rect.lo[0]; x < rect.hi[0]; ++x) {
+  for (int64_t y = rect.lo[1]; y <= rect.hi[1]; ++y) {
+    for (int64_t x = rect.lo[0]; x <= rect.hi[0]; ++x) {
       double v = x + y + ripple[x % period] + ripple[y % period];
       Point<2> p(x, y);
       acc[p] = v;
@@ -106,19 +106,22 @@ void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
   const FieldAccessor<READ_ONLY, double, 2> rdAcc(regions[0], readFid);
   const FieldAccessor<WRITE_DISCARD, double, 2> wrAcc(regions[1], writeFid);
 
-  for (int64_t y = rdRect.lo[1]; y < rdRect.hi[1]; ++y) {
-    for (int64_t x = rdRect.lo[0]; x < rdRect.hi[0]; ++x) {
+#define STENCIL_TASK_DUMP_INPUT 0
+#if STENCIL_TASK_DUMP_INPUT
+  for (int64_t y = rdRect.lo[1]; y <= rdRect.hi[1]; ++y) {
+    for (int64_t x = rdRect.lo[0]; x <= rdRect.hi[0]; ++x) {
       Point<2> p(x, y);
       std::cerr << std::setw(6) << rdAcc[p] << " ";
     }
     std::cerr << "\n";
   }
+#endif
 
-#if 0
-  for (int64_t y = wrRect.lo[1]; y < wrRect.hi[1]; ++y) {
-    for (int64_t x = wrRect.lo[0]; x < wrRect.hi[0]; ++x) {
+#if 1
+  for (int64_t y = wrRect.lo[1]; y <= wrRect.hi[1]; ++y) {
+    for (int64_t x = wrRect.lo[0]; x <= wrRect.hi[0]; ++x) {
 
-      if ((x - 2) >= rdRect.lo[0] && (x + 2) <= rdRect.hi[0] &&
+      if ((x - RADIUS) >= rdRect.lo[0] && (x + RADIUS) <= rdRect.hi[0] &&
           y >= rdRect.lo[1] && y <= rdRect.hi[1]) {
         // first derivative in x
         double v = 0;
@@ -127,7 +130,7 @@ void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
         v += -1 * rdAcc[Point<2>(x + 2, y)];
         v += 8 * rdAcc[Point<2>(x + 1, y)];
         v /= 12;
-        Point<2> p (x,y);
+        Point<2> p(x, y);
         wrAcc[p] = v;
         std::cerr << p << " " << v << "\n";
       }
@@ -210,9 +213,9 @@ void top_level_task(const Task *task,
                     const std::vector<PhysicalRegion> &regions, Context ctx,
                     Runtime *runtime) {
 
-  Point<2> numElements(16 /*x*/, 16 /*y*/);
-  Point<2> numSubregions(2, 2);
-  int num_steps = 10;
+  Point<2> numElements(17 /*x*/, 16 /*y*/);
+  Point<2> numSubregions(3, 2);
+  int numSteps = 1;
   // Check for any command line arguments
   { const InputArgs &command_args = Runtime::get_input_args(); }
 
@@ -223,27 +226,38 @@ void top_level_task(const Task *task,
   IndexSpace is = runtime->create_index_space(ctx, elem_rect);
   runtime->attach_name(is, "is");
 
+  // field space
+  FieldSpace fs = runtime->create_field_space(ctx);
+  {
+    FieldAllocator allocator = runtime->create_field_allocator(ctx, fs);
+    allocator.allocate_field(sizeof(DTYPE), FID_IN);
+    allocator.allocate_field(sizeof(DTYPE), FID_OUT);
+  }
+
+  // top-level logical region
+  LogicalRegion lr = runtime->create_logical_region(ctx, is, fs);
+
   // create 2D index partition
   Rect<2> colorSpaceRect(Point<2>(0, 0),
                          Point<2>(numSubregions[0] - 1, numSubregions[1] - 1));
   Domain colorSpace(colorSpaceRect);
   DomainPointColoring haloColoring;
+
+  Point<2> tileSz;
+  for (int dim = 0; dim < 2; ++dim) {
+    tileSz[dim] = (numElements[dim] + numSubregions[dim] - 1) / numSubregions[dim];
+  }
+
   for (int y = 0; y < numSubregions[1]; ++y) {
     for (int x = 0; x < numSubregions[0]; ++x) {
       DomainPoint color = DomainPoint(Point<2>(x, y));
       Rect<2> haloRect;
-      haloRect.lo[0] =
-          std::max(numElements[0] / numSubregions[0] * x - RADIUS, 0ll);
-      haloRect.lo[1] =
-          std::max(numElements[1] / numSubregions[1] * y - RADIUS, 0ll);
+      haloRect.lo[0] = std::max(tileSz[0] * x - RADIUS, 0ll);
+      haloRect.lo[1] = std::max(tileSz[1] * y - RADIUS, 0ll);
       haloRect.hi[0] =
-          std::min(numElements[0] / numSubregions[0] * (x + 1) + RADIUS,
-                   numElements[0]) -
-          1;
+          std::min(tileSz[0] * (x + 1) + RADIUS, numElements[0]) - 1;
       haloRect.hi[1] =
-          std::min(numElements[1] / numSubregions[1] * (y + 1) + RADIUS,
-                   numElements[1]) -
-          1;
+          std::min(tileSz[1] * (y + 1) + RADIUS, numElements[1]) - 1;
 
       std::cerr << color << " halo=" << haloRect << "\n";
 
@@ -257,26 +271,22 @@ void top_level_task(const Task *task,
   IndexPartition haloIp =
       runtime->create_index_partition(ctx, is, colorSpace, haloColoring);
 #pragma GCC diagnostic pop
+  LogicalPartition haloPartition =
+      runtime->get_logical_partition(ctx, lr, haloIp);
 
-  /* create regions
+  /* partition each tile into the private region and the ghost regions
    */
-  FieldSpace fs = runtime->create_field_space(ctx);
-  {
-    FieldAllocator allocator = runtime->create_field_allocator(ctx, fs);
-    allocator.allocate_field(sizeof(DTYPE), FID_IN);
-    allocator.allocate_field(sizeof(DTYPE), FID_OUT);
-  }
-  std::map<Point<2>, LogicalRegion> logicalRegions;
   std::map<Point<2>, LogicalPartition> logicalPartitions;
+  std::map<Point<2>, LogicalRegion> tiles;
   for (int y = 0; y < numSubregions[1]; ++y) {
     for (int x = 0; x < numSubregions[0]; ++x) {
       Point<2> partPoint(x, y);
-      IndexSpace subspace = runtime->get_index_subspace(ctx, haloIp, partPoint);
-      std::cerr << "create region for " << partPoint << "\n";
-      LogicalRegion lr = runtime->create_logical_region(ctx, subspace, fs);
-      logicalRegions[partPoint] = lr;
+      std::cerr << "get region for " << partPoint << "\n";
+      LogicalRegion sr = runtime->get_logical_subregion_by_color(
+          ctx, haloPartition, partPoint);
+      tiles[partPoint] = sr;
       LogicalPartition lp =
-          create_halo_partition(ctx, lr, numElements, runtime);
+          create_halo_partition(ctx, sr, numElements, runtime);
       logicalPartitions[partPoint] = lp;
     }
   }
@@ -292,42 +302,34 @@ void top_level_task(const Task *task,
       {
         LogicalRegion reg = runtime->get_logical_subregion_by_color(
             ctx, logicalPartitions[taskPoint], PRIVATE);
-        RegionRequirement req(reg, WRITE_DISCARD, EXCLUSIVE,
-                              logicalRegions[taskPoint]);
+        // tiles[] is not the parent because that logical region was never
+        // created
+        RegionRequirement req(reg, WRITE_DISCARD, EXCLUSIVE, lr);
         req.add_field(FID_OUT);
         init_launcher.add_region_requirement(req);
       }
 
       std::cerr << "init task for " << taskPoint << "\n";
-      runtime->execute_task(ctx, init_launcher);
+      auto fut = runtime->execute_task(ctx, init_launcher);
+      fut.wait();
     }
   }
 
-  for (int n = 0; n < 1; ++n) {
+  for (int n = 0; n < numSteps; ++n) {
     std::cerr << "iteration " << n << "\n";
 
     std::map<Point<2>, Future> futs;
 
-    // copy private FID_OUT the private region of FID_IN
-    for (int y = 0; y < numSubregions[1]; ++y) {
-      for (int x = 0; x < numSubregions[0]; ++x) {
-
-        Point<2> taskPoint(x, y);
-
-        LogicalRegion reg = runtime->get_logical_subregion_by_color(
-            ctx, logicalPartitions[taskPoint], PRIVATE);
-        RegionRequirement dst(reg, WRITE_DISCARD, EXCLUSIVE,
-                              logicalRegions[taskPoint]);
-        dst.add_field(FID_IN);
-        RegionRequirement src(reg, READ_ONLY, EXCLUSIVE,
-                              logicalRegions[taskPoint]);
-        src.add_field(FID_OUT);
-        CopyLauncher launcher;
-        launcher.add_copy_requirements(src, dst);
-
-        std::cerr << "issue copy for " << taskPoint << "\n";
-        runtime->issue_copy_operation(ctx, launcher);
-      }
+    // copy FID_OUT to FID_IN
+    {
+      RegionRequirement dst(lr, WRITE_DISCARD, EXCLUSIVE, lr);
+      dst.add_field(FID_IN);
+      RegionRequirement src(lr, READ_ONLY, EXCLUSIVE, lr);
+      src.add_field(FID_OUT);
+      CopyLauncher launcher;
+      launcher.add_copy_requirements(src, dst);
+      std::cerr << "issue copy\n";
+      runtime->issue_copy_operation(ctx, launcher);
     }
 
     // launch stencil tasks
@@ -339,8 +341,7 @@ void top_level_task(const Task *task,
 
         // read-only access to the whole input region
         {
-          RegionRequirement req(logicalRegions[taskPoint], READ_ONLY,
-                                SIMULTANEOUS, logicalRegions[taskPoint]);
+          RegionRequirement req(tiles[taskPoint], READ_ONLY, SIMULTANEOUS, lr);
           req.add_field(FID_IN);
           stencil_launcher.add_region_requirement(req);
         }
@@ -349,8 +350,7 @@ void top_level_task(const Task *task,
         {
           LogicalRegion reg = runtime->get_logical_subregion_by_color(
               ctx, logicalPartitions[taskPoint], PRIVATE);
-          RegionRequirement req(reg, WRITE_DISCARD, EXCLUSIVE,
-                                logicalRegions[taskPoint]);
+          RegionRequirement req(reg, WRITE_DISCARD, EXCLUSIVE, lr);
           req.add_field(FID_OUT);
           stencil_launcher.add_region_requirement(req);
         }
