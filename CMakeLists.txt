@@ -34,6 +34,10 @@ target_link_libraries(2-ghost-gpu nvToolsExt)
 add_executable(print-machine print_machine.cpp)
 target_link_libraries(print-machine Legion::Legion)
 
-add_executable(3-stencil 3_stencil.cu)
-target_link_libraries(3-stencil Legion::Legion)
-target_link_libraries(3-stencil nvToolsExt)
+add_executable(3-stencil-indexspace 3_stencil_indexspace.cu)
+target_link_libraries(3-stencil-indexspace Legion::Legion)
+target_link_libraries(3-stencil-indexspace nvToolsExt)
+
+add_executable(4-stencil 4_stencil.cu)
+target_link_libraries(4-stencil Legion::Legion)
+target_link_libraries(4-stencil nvToolsExt)
