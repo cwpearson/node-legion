@@ -8,7 +8,7 @@
 #include <unistd.h>
 
 // use the Node Aware Must Epoch Mapper
-// #define USE_NAMEM
+#define USE_NAMEM 1
 
 #include "node_aware_must_epoch_mapper.hpp"
 
@@ -457,7 +457,7 @@ int main(int argc, char **argv) {
     Runtime::preregister_task_variant<stencil_task>(registrar, "stencil");
   }
 
-#ifdef USE_NAMEM
+#if USE_NAMEM
   Runtime::add_registration_callback(
       NodeAwareMustEpochMapper::mapper_registration);
 #endif
