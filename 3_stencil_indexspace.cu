@@ -32,8 +32,9 @@ typedef FieldAccessor<WRITE_DISCARD, double, 2, coord_t,
 
 enum {
   TOP_LEVEL_TASK_ID,
-  STENCIL_TASK_ID,
   INIT_TASK_ID,
+  STENCIL_TASK_ID,
+  CHECK_TASK_ID,
 };
 
 /* stencil iterations alternate 0->1 and 1->0
@@ -41,7 +42,6 @@ enum {
 enum {
   FID_IN,
   FID_OUT,
-  FID_GHOST,
 };
 
 enum {
@@ -205,6 +205,60 @@ void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
 #endif // STENCIL_TASK_CPU
 }
 
+__global__ void check_kernel(int *errors, Rect<2> rect, AccessorRO acc) {
+
+  constexpr double ripple[4] = {0, 1, 0, -1};
+  constexpr size_t period = sizeof(ripple) / sizeof(ripple[0]);
+
+  const int tx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int ty = blockIdx.y * blockDim.y + threadIdx.y;
+
+  for (int64_t y = rect.lo[1] + ty; y <= rect.hi[1];
+       y += gridDim.y * blockDim.y) {
+    for (int64_t x = rect.lo[0] + tx; x <= rect.hi[0];
+         x += gridDim.x * blockDim.x) {
+
+      double e = 1 + ripple[x % period];
+      Point<2> p(x, y);
+      double v = acc[p];
+
+      if (std::abs(e / v) < 1.01 && std::abs(e / v) > 0.99) {
+        atomicAdd(errors, 1);
+      }
+    }
+  }
+}
+
+void check_task(const Task *task, const std::vector<PhysicalRegion> &regions,
+                Context ctx, Runtime *runtime) {
+
+  std::cerr << "check_task: regions.size()=" << regions.size() << "\n";
+
+  Rect<2> rect = runtime->get_index_space_domain(
+      ctx, task->regions[0].region.get_index_space());
+  std::cerr << "check_task: rect=" << rect << "\n";
+  const FieldID fid = *(task->regions[0].privilege_fields.begin());
+  const AccessorRO acc(regions[0], fid);
+
+  int *dErrors, hErrors =1;
+  cudaMalloc(&dErrors, sizeof(int));
+  cudaMemset(dErrors, 0, sizeof(int));
+
+  dim3 dimBlock(32, 32);
+  dim3 dimGrid;
+  dimGrid.x = ((rect.hi[0] - rect.lo[0] + 1) + dimBlock.x - 1) / dimBlock.x;
+  dimGrid.y = ((rect.hi[1] - rect.lo[1] + 1) + dimBlock.y - 1) / dimBlock.y;
+  check_kernel<<<dimGrid, dimBlock>>>(dErrors, rect, acc);
+
+  cudaMemcpy(&hErrors, dErrors, sizeof(int), cudaMemcpyDeviceToHost);
+
+  if (hErrors) {
+    std::cerr << "ERROR:\n";
+  }
+
+  cudaFree(dErrors);
+}
+
 void top_level_task(const Task *task,
                     const std::vector<PhysicalRegion> &regions, Context ctx,
                     Runtime *runtime) {
@@ -304,7 +358,6 @@ void top_level_task(const Task *task,
       runtime->get_logical_partition(ctx, lr, disjointIp);
 
   {
-
     IndexTaskLauncher init_launcher(INIT_TASK_ID, launchSpace,
                                     TaskArgument(NULL, 0), ArgumentMap());
     // write-discard access to center region in output
@@ -363,6 +416,23 @@ void top_level_task(const Task *task,
       FutureMap futs = runtime->execute_index_space(ctx, stencil_launcher);
       futs.wait_all_results();
     }
+
+    // check first derivative for correctness
+    {
+      IndexTaskLauncher check_launcher(CHECK_TASK_ID, launchSpace,
+                                       TaskArgument(NULL, 0), ArgumentMap());
+      // write-discard access to center region in output
+      {
+        RegionRequirement req(disjointPartition, 0 /*identity projection?*/,
+                              READ_ONLY, EXCLUSIVE, lr);
+        req.add_field(FID_OUT);
+        check_launcher.add_region_requirement(req);
+      }
+
+      std::cerr << "execute index space: check\n";
+      FutureMap futs = runtime->execute_index_space(ctx, check_launcher);
+      futs.wait_all_results();
+    }
   }
 
   runtime->destroy_logical_region(ctx, lr);
@@ -389,6 +459,12 @@ int main(int argc, char **argv) {
     TaskVariantRegistrar registrar(STENCIL_TASK_ID, "stencil");
     registrar.add_constraint(ProcessorConstraint(Processor::TOC_PROC));
     Runtime::preregister_task_variant<stencil_task>(registrar, "stencil");
+  }
+
+  {
+    TaskVariantRegistrar registrar(CHECK_TASK_ID, "check");
+    registrar.add_constraint(ProcessorConstraint(Processor::TOC_PROC));
+    Runtime::preregister_task_variant<check_task>(registrar, "check");
   }
 
 #if USE_NAMEM
