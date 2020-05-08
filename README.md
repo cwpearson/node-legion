@@ -17,12 +17,26 @@ git checkout cwpearson-nvidiaml
 mkdir build
 cd build
 cmake .. -DCMAKE_INSTALL_PREFIX=`readlink -f ../../legion-install/` \
-  -DLegion_USE_CUDA=ON -DLegion_CUDA_ARCH=61 \
-  -DLegion_OUTPUT_LEVEL=DEBUG
+  -DLegion_USE_CUDA=ON -DLegion_CUDA_ARCH=61
+```
+
+For a Debug build:
+```
+cmake .. \
+  -DLegion_OUTPUT_LEVEL=SPEW \
+  -DCMAKE_BUILD_TYPE=Debug
 make
 make install
 ```
 
+For a Release build:
+```
+cmake .. \
+  -DLegion_OUTPUT_LEVEL=INFO \
+  -DCMAKE_BUILD_TYPE=Release
+make
+make install
+```
 ## Build our code
 
 Assuming legion was installed at the repo root.
