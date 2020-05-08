@@ -403,18 +403,20 @@ void NodeAwareMustEpochMapper::select_tasks_to_map(
     const MapperContext ctx, const SelectMappingInput &input,
     SelectMappingOutput &output) {
 
-  log_mapper.spew("select_tasks_to_map");
+  log_mapper.spew("[entry] %s()", __FUNCTION__);
 
   for (const Task *task : input.ready_tasks) {
     log_mapper.spew("task %u", task->task_id);
   }
 
   // just take all tasks
-  log_mapper.debug("%s(): selecting %lu tasks\n", __FUNCTION__,
+  log_mapper.debug("%s(): selecting all %lu tasks", __FUNCTION__,
                    input.ready_tasks.size());
   for (const Task *task : input.ready_tasks) {
     output.map_tasks.insert(task);
   }
+
+  log_mapper.spew("[exit] %s()", __FUNCTION__);
 }
 
 void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
@@ -422,10 +424,11 @@ void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
                                         const MapTaskInput &input,
                                         MapTaskOutput &output) {
   nvtxRangePush("NodeAwareMustEpochMapper::map_task");
+  log_mapper.spew("[entry] map_task()");
+
   if (task.target_proc.kind() == Processor::TOC_PROC) {
 
-    log_mapper.spew("task %u", task.task_id);
-    std::cerr << "parent: " << task.parent_task << "\n";
+    log_mapper.spew("task %u (parent_task=%u)", task.task_id, task.parent_task->task_id);
 
     /* some regions may already be mapped
      */
@@ -438,10 +441,19 @@ void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
     }
   }
 
+  log_mapper.spew("map_task() defer to DefaultMapper::map_task");
   DefaultMapper::map_task(ctx, task, input, output);
 
   // get the runtime to call `postmap_task` when the task finishes running
-  output.postmap_task = true;
+  // TODO: causes a crash by itself
+  output.postmap_task = false;
+
+  log_mapper.spew("target_procs.size()=%lu", output.target_procs.size());
+  for (auto &proc : output.target_procs) {
+    log_mapper.spew() << proc;
+  }
+
+  log_mapper.spew("[exit] map_task()");
   nvtxRangePop();
 }
 
@@ -454,7 +466,6 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   for (const auto &task : input.tasks) {
     log_mapper.spew("task %u", task->task_id);
   }
-
 
   // ensure all tasks can run on GPU
   for (const auto &task : input.tasks) {
@@ -979,8 +990,10 @@ struct PostMapOutput {
   std::vector<std::vector<PhysicalInstance> >     chosen_instances;
 };
 */
-void NodeAwareMustEpochMapper::postmap_task(const MapperContext ctx, const Task &task,
-                  const PostMapInput &input, PostMapOutput &output) {
+void NodeAwareMustEpochMapper::postmap_task(const MapperContext ctx,
+                                            const Task &task,
+                                            const PostMapInput &input,
+                                            PostMapOutput &output) {
 
   log_mapper.debug() << "in NodeAwareMustEpochMapper::postmap_task";
 }
