@@ -318,6 +318,44 @@ public:
 
 public:
   /*
+  If the task is an index task launch the runtime calls slice_task to divide the
+  index task into a set of slices that contain point tasks. One slice
+  corresponds to one target processor. Each slice identifies an index space, a
+  subregion of the original domain and a target processor. All of the point
+  tasks for the subregion will be mapped by the mapper for the target processor.
+
+  If slice.stealable is true the task can be stolen for load balancing. If
+  slice.recurse is true the mapper for the target processor will invoke
+  slice_task again with the slice as input. Here is sample code to create a
+  stealable slice:
+
+  ```
+  struct SliceTaskInput {
+    IndexSpace                             domain_is;
+    Domain                                 domain;
+  };
+
+  struct SliceTaskOutput {
+    std::vector<TaskSlice>                 slices;
+    bool                                   verify_correctness; // = false
+  };
+  ```
+
+  A stealable slice:
+  ```
+  TaskSlice slice;
+  slice.domain = slice_subregion;
+  slice.proc = targets[target_proc_index];
+  slice.recurse = false;
+  slice.stealable = true;
+  slices.push_back(slice);
+  ```
+
+  */
+  virtual void slice_task(const MapperContext ctx, const Task &task,
+                          const SliceTaskInput &input, SliceTaskOutput &output);
+
+  /*
   If a mapper has one or more tasks that are ready to execute it calls
   select_tasks_to_map. This method can copy tasks to the map_tasks list to
   indicate the task should be mapped by this mapper. The method can copy tasks
@@ -394,6 +432,142 @@ bool NodeAwareMustEpochMapper::has_gpu_variant(const MapperContext ctx,
 }
 
 /*
+
+struct SliceTaskInput {
+  IndexSpace                             domain_is;
+  Domain                                 domain;
+};
+
+struct SliceTaskOutput {
+  std::vector<TaskSlice>                 slices;
+  bool                                   verify_correctness; // = false
+};
+
+  TaskSlice slice;
+  slice.domain = slice_subregion;
+  slice.proc = targets[target_proc_index];
+  slice.recurse = false;
+  slice.stealable = true;
+  slices.push_back(slice);
+
+
+  We do similar to the default mapper here:
+  Use default_select_num_blocks to split along prime factors
+  Instead of group
+*/
+void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
+                                          const Task &task,
+                                          const SliceTaskInput &input,
+                                          SliceTaskOutput &output) {
+  log_mapper.spew("[entry] %s()", __FUNCTION__);
+
+  log_mapper.spew() << __FUNCTION__
+                    << "(): input.domain_is = " << input.domain_is;
+  log_mapper.spew() << __FUNCTION__ << "(): input.domain    = " << input.domain;
+
+  log_mapper.spew("%lu task.regions:", task.regions.size());
+  for (auto &rr : task.regions) {
+    log_mapper.spew() << "parent";
+    log_mapper.spew() << rr.parent;
+    log_mapper.spew() << rr.parent.get_index_space();
+    log_mapper.spew() << runtime->get_index_space_domain(
+        ctx, rr.parent.get_index_space());
+    {
+      log_mapper.spew() << "ubregion by partition";
+      log_mapper.spew() << rr.partition;
+      LogicalRegion lsr = runtime->get_logical_subregion(
+          ctx, rr.partition, rr.parent.get_index_space());
+      log_mapper.spew() << lsr;
+      log_mapper.spew() << runtime->get_index_space_domain(
+          ctx, lsr.get_index_space());
+    }
+    // TODO why does this work but the above does not
+    {
+      log_mapper.spew() << "subregion by color";
+      LogicalRegion lr = runtime->get_logical_subregion_by_color(
+          ctx, rr.partition, Point<2>(0, 0));
+      log_mapper.spew() << lr;
+      log_mapper.spew() << runtime->get_index_space_domain(
+          ctx, lr.get_index_space());
+    }
+
+    // TODO: why does the region index space seem to be broken?
+    // IndexSpace is = rr.region.get_index_space();
+    // log_mapper.spew() << is;
+  }
+
+  Machine::ProcessorQuery gpuProcQuery(machine);
+  gpuProcQuery.only_kind(Processor::TOC_PROC);
+  std::vector<Processor> gpuProcs(gpuProcQuery.begin(), gpuProcQuery.end());
+
+  // TODO: don't double the procs
+  // double the procs
+  gpuProcs.insert(gpuProcs.end(), gpuProcs[0]);
+
+  log_mapper.spew("%s() found %lu GPUs", __FUNCTION__, gpuProcs.size());
+
+  // IndexSpace _ = input.domain_is;
+  // Domain _ = input.domain;
+
+  switch (input.domain.get_dim()) {
+  case 1: {
+#define __DIM 1
+    DomainT<__DIM> ps = input.domain;
+    Point<__DIM> numBlocks = DefaultMapper::default_select_num_blocks<__DIM>(
+        gpuProcs.size(), ps.bounds);
+    log_mapper.spew() << numBlocks;
+    log_mapper.spew("%s() use DefaultMapper::default_decompose_points",
+                    __FUNCTION__);
+    DomainT<__DIM, coord_t> pointSpace = input.domain;
+    DefaultMapper::default_decompose_points(
+        pointSpace, gpuProcs, numBlocks, false /*recurse*/,
+        false /*disable stealing*/, output.slices);
+    break;
+#undef __DIM
+  }
+  case 2: {
+#define __DIM 2
+    DomainT<__DIM> ps = input.domain;
+    Point<__DIM> numBlocks = DefaultMapper::default_select_num_blocks<__DIM>(
+        gpuProcs.size(), ps.bounds);
+    log_mapper.spew() << numBlocks;
+    log_mapper.spew("%s() use DefaultMapper::default_decompose_points",
+                    __FUNCTION__);
+    DomainT<__DIM, coord_t> pointSpace = input.domain;
+    DefaultMapper::default_decompose_points(
+        pointSpace, gpuProcs, numBlocks, false /*recurse*/,
+        false /*disable stealing*/, output.slices);
+    break;
+#undef __DIM
+  }
+  case 3: {
+#define __DIM 3
+    DomainT<__DIM> ps = input.domain;
+    Point<__DIM> numBlocks = DefaultMapper::default_select_num_blocks<__DIM>(
+        gpuProcs.size(), ps.bounds);
+    log_mapper.spew() << numBlocks;
+    log_mapper.spew("%s() use DefaultMapper::default_decompose_points",
+                    __FUNCTION__);
+    DomainT<__DIM, coord_t> pointSpace = input.domain;
+    DefaultMapper::default_decompose_points(
+        pointSpace, gpuProcs, numBlocks, false /*recurse*/,
+        false /*disable stealing*/, output.slices);
+    break;
+#undef __DIM
+  }
+  }
+
+  log_mapper.spew("output.slices");
+  for (auto &slice : output.slices) {
+    log_mapper.spew() << slice.domain;
+  }
+
+  // log_mapper.spew("%s() use DefaultMapper::slice_task", __FUNCTION__);
+  // DefaultMapper::slice_task(ctx, task, input, output);
+  log_mapper.spew("[exit] %s()", __FUNCTION__);
+}
+
+/*
 This method can copy tasks to the map_tasks list to indicate the task should be
 mapped by this mapper. The method can copy tasks to the relocate_tasks list to
 indicate the task should be mapped by a mapper for a different processor. If it
@@ -426,9 +600,16 @@ void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
   nvtxRangePush("NodeAwareMustEpochMapper::map_task");
   log_mapper.spew("[entry] map_task()");
 
+  log_mapper.spew("%lu task.regions:", task.regions.size());
+  for (auto &rr : task.regions) {
+    log_mapper.spew() << rr.region;
+    // log_mapper.spew() << runtime->get_logical_region_
+  }
+
   if (task.target_proc.kind() == Processor::TOC_PROC) {
 
-    log_mapper.spew("task %u (parent_task=%u)", task.task_id, task.parent_task->task_id);
+    log_mapper.spew("task %u (parent_task=%u)", task.task_id,
+                    task.parent_task->task_id);
 
     /* some regions may already be mapped
      */

@@ -108,6 +108,12 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
 * Interference [Tutorial: Privileges](https://legion.stanford.edu/tutorial/privileges.html)
   * Region non-interference: RegionRequirements are non-interfering on regions if they access logical regions from different region trees, or disjoint logical regions from the same tree.
 
+* Index Space Tasks
+  * [Index Space Tasks (Tutorial)](https://legion.stanford.edu/tutorial/index_tasks.html)
+  * [slice_task (Mapper API)](https://legion.stanford.edu/mapper/index.html)
+  * [slice_task (Custom Mappers)](https://legion.stanford.edu/tutorial/custom_mappers.html)
+  * Index Space tasks are supposed to be non-interfering, but we have no visibility into say read-only data that is shared between these non-interfering tasks
+
 ## Machine Mode
 
 * [Discussion in `Introduction to the Legion Mapper API`](https://legion.stanford.edu/mapper/#Machine-model)

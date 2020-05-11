@@ -264,7 +264,7 @@ void top_level_task(const Task *task,
                     Runtime *runtime) {
 
   Point<2> numElements(17 /*x*/, 16 /*y*/);
-  Point<2> numSubregions(3, 2);
+  Point<2> numSubregions(5, 3);
   int numSteps = 1;
   // Check for any command line arguments
   { const InputArgs &command_args = Runtime::get_input_args(); }
@@ -274,6 +274,7 @@ void top_level_task(const Task *task,
   Point<2, size_t> hi(numElements[0] - 1, numElements[1] - 1);
   Rect<2> elem_rect(lo, hi);
   IndexSpace is = runtime->create_index_space(ctx, elem_rect);
+  std::cerr << is << "\n";
   runtime->attach_name(is, "is");
 
   // Compute domain field space
@@ -286,6 +287,12 @@ void top_level_task(const Task *task,
 
   // compute domain logical region
   LogicalRegion lr = runtime->create_logical_region(ctx, is, fs);
+  std::cerr << lr << "\n";
+
+  std::cerr << lr.get_index_space() << "\n";
+  Rect<2> rect =
+  runtime->get_index_space_domain(ctx, lr.get_index_space());
+  std::cerr << rect << "\n";
 
   // launch index space
   Rect<2> launchRect(Point<2>(0, 0),
@@ -320,7 +327,7 @@ void top_level_task(const Task *task,
               std::min(tileSz[0] * (x + 1) + RADIUS, numElements[0]) - 1;
           tileRect.hi[1] =
               std::min(tileSz[1] * (y + 1) + RADIUS, numElements[1]) - 1;
-          std::cerr << color << " tile=" << tileRect << "\n";
+          std::cerr << "color=" << color << " tile=" << tileRect << "\n";
           tileColoring[color] = tileRect;
         }
 
