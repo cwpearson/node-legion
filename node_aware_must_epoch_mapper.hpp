@@ -312,6 +312,20 @@ using namespace Legion::Mapping;
 Logger log_mapper("node_aware_must_epoch_mapper");
 
 class NodeAwareMustEpochMapper : public DefaultMapper {
+
+private:
+  /* Get the overlap between region requirements in bytes
+   */
+  int64_t get_region_requirement_overlap(MapperContext ctx,
+                                         const RegionRequirement &rra,
+                                         const RegionRequirement &rrb);
+
+  /* Get the overlap between Logical Regions in bytes
+   */
+  int64_t get_logical_region_overlap(MapperContext ctx,
+                                     const LogicalRegion &lra,
+                                     const LogicalRegion &lrb);
+
 public:
   NodeAwareMustEpochMapper(MapperRuntime *rt, Machine machine, Processor local,
                            const char *mapper_name);
@@ -465,15 +479,83 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
                     << "(): input.domain_is = " << input.domain_is;
   log_mapper.spew() << __FUNCTION__ << "(): input.domain    = " << input.domain;
 
+  // data overlap between index task domain points
+  ap::Mat2D<int64_t> overlap(input.domain.get_volume(), input.domain.get_volume(), 0);
+
+  switch (input.domain.dim) {
+  case 1: {
+    assert(false);
+  }
+  case 2: {
+    int i = 0;
+    for (PointInDomainIterator<2> pi(input.domain); pi(); ++pi, ++i) {
+      int j = 0;
+      for (PointInDomainIterator<2> pj(input.domain); pj(); ++pj, ++j) {
+        
+        int64_t bytes = 0;
+        for (int ri = 0; ri < task.regions.size(); ++ri) {
+          LogicalRegion li = runtime->get_logical_subregion_by_color(
+              ctx, task.regions[ri].partition, *pi);
+
+          // make a fake region requirement that replaces the partition with the
+          // logical region
+          // TODO this feels sketchy
+          RegionRequirement rra = task.regions[ri];
+          rra.partition = LogicalPartition::NO_PART;
+          rra.region = li;
+          for (int rj = 0; rj < task.regions.size(); ++rj) {
+            LogicalRegion lj = runtime->get_logical_subregion_by_color(
+                ctx, task.regions[rj].partition, *pj);
+
+            // TODO this feels sketchy
+            RegionRequirement rrb = task.regions[rj];
+            rrb.partition = LogicalPartition::NO_PART;
+            rrb.region = lj;
+
+            int64_t newBytes = get_region_requirement_overlap(ctx, rra, rrb);
+            // std::cerr << i << " " << j << " " << ri << " " << rj << " bytes=" << newBytes << "\n";
+            bytes += newBytes;
+
+
+
+          }
+        }
+        std::cerr << "slice " << *pi << " " << *pj << " bytes=" << bytes << "\n";
+        overlap.at(i,j) = bytes;
+      }
+    }
+    break;
+  }
+  case 3: {
+    assert(false);
+  }
+  }
+
+  printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
+  for (size_t i = 0; i < overlap.shape()[1]; ++i) {
+    printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
+    for (size_t j = 0; j < overlap.shape()[0]; ++j) {
+      printf(" %6ld", overlap.at(i, j));
+    }
+    printf("\n");
+  }
+
+
+
   log_mapper.spew("%lu task.regions:", task.regions.size());
   for (auto &rr : task.regions) {
+    log_mapper.spew() << "region exists: " << rr.region.exists();
+    log_mapper.spew() << "partition exists: " << rr.partition.exists();
+    log_mapper.spew() << "parent exists: " << rr.parent.exists();
+
     log_mapper.spew() << "parent";
     log_mapper.spew() << rr.parent;
     log_mapper.spew() << rr.parent.get_index_space();
+
     log_mapper.spew() << runtime->get_index_space_domain(
         ctx, rr.parent.get_index_space());
     {
-      log_mapper.spew() << "ubregion by partition";
+      log_mapper.spew() << "subregion by partition";
       log_mapper.spew() << rr.partition;
       LogicalRegion lsr = runtime->get_logical_subregion(
           ctx, rr.partition, rr.parent.get_index_space());
@@ -568,10 +650,10 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
 }
 
 /*
-This method can copy tasks to the map_tasks list to indicate the task should be
-mapped by this mapper. The method can copy tasks to the relocate_tasks list to
-indicate the task should be mapped by a mapper for a different processor. If it
-does neither the task stays in the ready list.
+This method can copy tasks to the map_tasks list to indicate the task should
+be mapped by this mapper. The method can copy tasks to the relocate_tasks list
+to indicate the task should be mapped by a mapper for a different processor.
+If it does neither the task stays in the ready list.
 */
 void NodeAwareMustEpochMapper::select_tasks_to_map(
     const MapperContext ctx, const SelectMappingInput &input,
@@ -1177,4 +1259,75 @@ void NodeAwareMustEpochMapper::postmap_task(const MapperContext ctx,
                                             PostMapOutput &output) {
 
   log_mapper.debug() << "in NodeAwareMustEpochMapper::postmap_task";
+}
+
+// TODO: incomplete
+int64_t NodeAwareMustEpochMapper::get_logical_region_overlap(
+    MapperContext ctx, const LogicalRegion &lra, const LogicalRegion &lrb) {
+  // if the two regions are not rooted by the same LogicalRegion, they can't
+  // overlap
+  if (lra.get_tree_id() != lrb.get_tree_id()) {
+    return 0;
+  }
+
+
+  // if the two regions don't have the same field space, they can't overlap
+  // TODO: true?
+  if (lra.get_field_space() != lrb.get_field_space()) {
+    return 0;
+  }
+
+  Domain aDom = runtime->get_index_space_domain(ctx, lra.get_index_space());
+  Domain bDom = runtime->get_index_space_domain(ctx, lrb.get_index_space());
+  Domain intersection = aDom.intersection(bDom);
+
+  return intersection.get_volume();
+}
+
+int64_t NodeAwareMustEpochMapper::get_region_requirement_overlap(
+    MapperContext ctx, const RegionRequirement &rra,
+    const RegionRequirement &rrb) {
+
+  // If the region requirements have no shared fields, the overlap is zero
+  std::set<FieldID> sharedFields;
+  for (auto &field : rrb.privilege_fields) {
+    auto it = std::find(rra.privilege_fields.begin(), rra.privilege_fields.end(),
+                        field);
+    if (it != rra.privilege_fields.end()) {
+      sharedFields.insert(field);
+    }
+  }
+  if (sharedFields.empty()) {
+    return 0;
+  }
+
+  // if the RegionRequirement was a logical partition, the caller
+  // should have converted it to a logical region for us
+  LogicalRegion lra;
+  if (rra.region.exists()) {
+    lra = rra.region;
+  } else if (rra.partition.exists()) {
+    assert(false);
+  } else {
+    assert(false);
+  }
+
+  LogicalRegion lrb;
+  if (rrb.region.exists()) {
+    lrb = rrb.region;
+  } else if (rrb.partition.exists()) {
+    assert(false);
+  } else {
+    assert(false);
+  }
+
+  int64_t sharedFieldSize = 0;
+  for (auto &f : sharedFields) {
+    sharedFieldSize += runtime->get_field_size(ctx, lra.get_field_space(), f);
+  }
+
+  int64_t numPoints = get_logical_region_overlap(ctx, lra, lrb);
+
+
+  return numPoints * sharedFieldSize; 
 }
