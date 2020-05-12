@@ -114,6 +114,12 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
   * [slice_task (Custom Mappers)](https://legion.stanford.edu/tutorial/custom_mappers.html)
   * Index Space tasks are supposed to be non-interfering, but we have no visibility into say read-only data that is shared between these non-interfering tasks
 
+  IndexTaskLaunchers deliver a single Task with a RegionRequirement with a `.partition` (and not a `.region`) to `<mapper>::slice_task`.
+  * First we adopt the fundamental theorem of arithmetic to split up the launch space along its longest dimension to prime number factors to match the number of GPUs
+    * in the future, it would be cool to do some kind of communication-aware splitting. Maybe trial communication costs along a few axes to decide how to split?
+  *  We iterate over the index space of that partition to extract the amount that each subregion overlaps with its neighboring subregions.
+  * Then we use that to assign subregions to GPUs
+
 ## Machine Mode
 
 * [Discussion in `Introduction to the Legion Mapper API`](https://legion.stanford.edu/mapper/#Machine-model)

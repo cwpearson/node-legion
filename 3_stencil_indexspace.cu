@@ -264,7 +264,7 @@ void top_level_task(const Task *task,
                     Runtime *runtime) {
 
   Point<2> numElements(17 /*x*/, 16 /*y*/);
-  Point<2> numSubregions(5, 3);
+  Point<2> numSubregions(3, 3);
   int numSteps = 1;
   // Check for any command line arguments
   { const InputArgs &command_args = Runtime::get_input_args(); }

@@ -330,7 +330,6 @@ public:
   NodeAwareMustEpochMapper(MapperRuntime *rt, Machine machine, Processor local,
                            const char *mapper_name);
 
-public:
   /*
   If the task is an index task launch the runtime calls slice_task to divide the
   index task into a set of slices that contain point tasks. One slice
@@ -408,6 +407,15 @@ protected:
   /* true if there is a GPU variant of the task
    */
   bool has_gpu_variant(const MapperContext ctx, TaskID id);
+
+  /* return GPUs pair with their closest FBs
+   */
+  std::vector<std::pair<Processor, Memory>> get_gpu_fbs();
+
+  /* return the distance matrix between the processors in `procs`
+   */
+  ap::Mat2D<double> get_gpu_distance_matrix(
+      const std::vector<std::pair<Processor, Memory>> &gpus);
 };
 
 NodeAwareMustEpochMapper::NodeAwareMustEpochMapper(MapperRuntime *rt,
@@ -468,6 +476,7 @@ struct SliceTaskOutput {
   We do similar to the default mapper here:
   Use default_select_num_blocks to split along prime factors
   Instead of group
+
 */
 void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
                                           const Task &task,
@@ -479,8 +488,15 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
                     << "(): input.domain_is = " << input.domain_is;
   log_mapper.spew() << __FUNCTION__ << "(): input.domain    = " << input.domain;
 
+  // get the frame buffer for each GPU
+  std::vector<std::pair<Processor, Memory>> gpus = get_gpu_fbs();
+
+  // get the distance between each pair of GPUs
+  ap::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
+
   // data overlap between index task domain points
-  ap::Mat2D<int64_t> overlap(input.domain.get_volume(), input.domain.get_volume(), 0);
+  ap::Mat2D<double> weight(input.domain.get_volume(), input.domain.get_volume(),
+                           0);
 
   switch (input.domain.dim) {
   case 1: {
@@ -491,14 +507,14 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
     for (PointInDomainIterator<2> pi(input.domain); pi(); ++pi, ++i) {
       int j = 0;
       for (PointInDomainIterator<2> pj(input.domain); pj(); ++pj, ++j) {
-        
+
         int64_t bytes = 0;
         for (int ri = 0; ri < task.regions.size(); ++ri) {
           LogicalRegion li = runtime->get_logical_subregion_by_color(
               ctx, task.regions[ri].partition, *pi);
 
-          // make a fake region requirement that replaces the partition with the
-          // logical region
+          // create fake region requirements that move the partition to the
+          // region so we can reuse the region distance code
           // TODO this feels sketchy
           RegionRequirement rra = task.regions[ri];
           rra.partition = LogicalPartition::NO_PART;
@@ -513,15 +529,14 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
             rrb.region = lj;
 
             int64_t newBytes = get_region_requirement_overlap(ctx, rra, rrb);
-            // std::cerr << i << " " << j << " " << ri << " " << rj << " bytes=" << newBytes << "\n";
+            // std::cerr << i << " " << j << " " << ri << " " << rj << " bytes="
+            // << newBytes << "\n";
             bytes += newBytes;
-
-
-
           }
         }
-        std::cerr << "slice " << *pi << " " << *pj << " bytes=" << bytes << "\n";
-        overlap.at(i,j) = bytes;
+        std::cerr << "slice " << *pi << " " << *pj << " bytes=" << bytes
+                  << "\n";
+        weight.at(i, j) = bytes;
       }
     }
     break;
@@ -532,15 +547,31 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
   }
 
   printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
-  for (size_t i = 0; i < overlap.shape()[1]; ++i) {
+  for (size_t i = 0; i < weight.shape()[1]; ++i) {
     printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
-    for (size_t j = 0; j < overlap.shape()[0]; ++j) {
-      printf(" %6ld", overlap.at(i, j));
+    for (size_t j = 0; j < weight.shape()[0]; ++j) {
+      printf(" %6f", weight.at(i, j));
     }
     printf("\n");
   }
 
+  double cost;
+  size_t cardinality =
+      weight.shape()[0] + distance.shape()[0] - 1 / distance.shape()[0];
+  log_mapper.spew("%s(): cardinality=%lu", __FUNCTION__, cardinality);
 
+  nvtxRangePush("solve_ap");
+  std::vector<size_t> f = ap::solve_ap(&cost, weight, distance, cardinality);
+  nvtxRangePop();
+
+  log_mapper.spew() << "assignment";
+  {
+    std::stringstream ss;
+    for (auto &e : f) {
+      ss << e << " ";
+    }
+    log_mapper.spew() << ss.str();
+  }
 
   log_mapper.spew("%lu task.regions:", task.regions.size());
   for (auto &rr : task.regions) {
@@ -595,9 +626,11 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
   case 1: {
 #define __DIM 1
     DomainT<__DIM> ps = input.domain;
+    log_mapper.spew() << "bounds=" << ps.bounds << " into " << gpuProcs.size()
+                      << " GPUs";
     Point<__DIM> numBlocks = DefaultMapper::default_select_num_blocks<__DIM>(
         gpuProcs.size(), ps.bounds);
-    log_mapper.spew() << numBlocks;
+    log_mapper.spew() << "blocks=" << numBlocks;
     log_mapper.spew("%s() use DefaultMapper::default_decompose_points",
                     __FUNCTION__);
     DomainT<__DIM, coord_t> pointSpace = input.domain;
@@ -610,9 +643,11 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
   case 2: {
 #define __DIM 2
     DomainT<__DIM> ps = input.domain;
+    log_mapper.spew() << "bounds=" << ps.bounds << " into " << gpuProcs.size()
+                      << " GPUs";
     Point<__DIM> numBlocks = DefaultMapper::default_select_num_blocks<__DIM>(
         gpuProcs.size(), ps.bounds);
-    log_mapper.spew() << numBlocks;
+    log_mapper.spew() << "blocks=" << numBlocks;
     log_mapper.spew("%s() use DefaultMapper::default_decompose_points",
                     __FUNCTION__);
     DomainT<__DIM, coord_t> pointSpace = input.domain;
@@ -625,9 +660,11 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
   case 3: {
 #define __DIM 3
     DomainT<__DIM> ps = input.domain;
+    log_mapper.spew() << "bounds=" << ps.bounds << " into " << gpuProcs.size()
+                      << " GPUs";
     Point<__DIM> numBlocks = DefaultMapper::default_select_num_blocks<__DIM>(
         gpuProcs.size(), ps.bounds);
-    log_mapper.spew() << numBlocks;
+    log_mapper.spew() << "blocks=" << numBlocks;
     log_mapper.spew("%s() use DefaultMapper::default_decompose_points",
                     __FUNCTION__);
     DomainT<__DIM, coord_t> pointSpace = input.domain;
@@ -998,108 +1035,20 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     printf("\n");
   }
 
-  printf("NodeAwareMustEpochMapper::%s(): GPU-FB affinities\n", __FUNCTION__);
-  std::vector<Machine::ProcessorMemoryAffinity> procMemAffinities;
-  machine.get_proc_mem_affinity(procMemAffinities);
-  for (auto &aff : procMemAffinities) {
-    // find the closes FB mem to each GPU
-    if (aff.p.kind() == Processor::TOC_PROC &&
-        aff.m.kind() == Memory::GPU_FB_MEM) {
-      std::cerr << aff.p << "-" << aff.m << " " << aff.bandwidth << " "
-                << aff.latency << "\n";
-    }
-  }
-
-  // the closest FB for each GPU
-  struct ProcMemPair {
-    Processor gpu;
-    Memory fb;
-  };
   nvtxRangePush("closest GPU & FB");
-  std::vector<ProcMemPair> gpus;
-  {
-    // find the highest-bandwidth fb each GPU has access to
-    std::map<Processor, Machine::ProcessorMemoryAffinity> best;
-    for (auto &aff : procMemAffinities) {
-      if (aff.p.kind() == Processor::TOC_PROC &&
-          aff.m.kind() == Memory::GPU_FB_MEM) {
-        auto it = best.find(aff.p);
-        if (it != best.end()) {
-          if (aff.bandwidth > it->second.bandwidth) {
-            it->second = aff;
-          }
-        } else {
-          best[aff.p] = aff;
-        }
-      }
-    }
-
-    size_t i = 0;
-    for (auto &kv : best) {
-      assert(kv.first == kv.second.p);
-      assert(kv.first.kind() == Processor::TOC_PROC);
-      assert(kv.second.m.kind() == Memory::GPU_FB_MEM);
-      log_mapper.spew() << "proc " << kv.first << ": closes mem=" << kv.second.m
-                        << " bw=" << kv.second.bandwidth
-                        << "latency=" << kv.second.latency;
-      ProcMemPair pmp;
-      pmp.gpu = kv.first;
-      pmp.fb = kv.second.m;
-      gpus.push_back(pmp);
-      ++i;
-    }
-  }
+  std::vector<std::pair<Processor, Memory>> gpus = get_gpu_fbs();
   nvtxRangePop(); // "closest GPU & FB"
 
   /* print our GPU number
    */
   for (size_t i = 0; i < gpus.size(); ++i) {
-    log_mapper.debug() << "GPU index " << i << "proc:" << gpus[i].gpu
-                       << "/mem:" << gpus[i].fb;
-  }
-
-  printf("NodeAwareMustEpochMapper::%s(): GPU memory-memory affinities\n",
-         __FUNCTION__);
-  std::vector<Machine::MemoryMemoryAffinity> memMemAffinities;
-  machine.get_mem_mem_affinity(memMemAffinities);
-  for (auto &aff : memMemAffinities) {
-    log_mapper.spew() << aff.m1 << "-" << aff.m2 << " " << aff.bandwidth << " "
-                      << aff.latency;
+    log_mapper.debug() << "GPU index " << i << "proc:" << gpus[i].first
+                       << "/mem:" << gpus[i].second;
   }
 
   /* build the distance matrix */
   nvtxRangePush("distance matrix");
-  ap::Mat2D<double> distance(gpus.size(), gpus.size(), 0);
-  {
-    size_t i = 0;
-    for (auto &src : gpus) {
-      size_t j = 0;
-      for (auto &dst : gpus) {
-
-        log_mapper.spew() << "looking for mma " << src.fb << " " << dst.fb;
-
-        // TODO: self distance is 0
-        if (src.gpu == dst.gpu) {
-          distance.at(i, j) = 0;
-        } else {
-          bool found = false;
-          for (auto &mma : memMemAffinities) {
-            if (mma.m1 == src.fb && mma.m2 == dst.fb) {
-              distance.at(i, j) = 1.0 / mma.bandwidth;
-              found = true;
-              break;
-            }
-          }
-          if (!found) {
-            log_mapper.error("couldn't find mem-mem affinity for GPU FBs");
-            assert(false);
-          }
-        }
-        ++j;
-      }
-      ++i;
-    }
-  }
+  ap::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
   nvtxRangePop(); // distance matrix
 
   printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
@@ -1165,7 +1114,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   std::map<const Task *, Processor> procMap;
   for (size_t gi = 0; gi < groups.size(); ++gi) {
     for (const Task *task : groups[gi]) {
-      procMap[task] = gpus[assignment[gi]].gpu;
+      procMap[task] = gpus[assignment[gi]].first;
     }
   }
   for (unsigned i = 0; i < input.tasks.size(); ++i) {
@@ -1270,7 +1219,6 @@ int64_t NodeAwareMustEpochMapper::get_logical_region_overlap(
     return 0;
   }
 
-
   // if the two regions don't have the same field space, they can't overlap
   // TODO: true?
   if (lra.get_field_space() != lrb.get_field_space()) {
@@ -1291,8 +1239,8 @@ int64_t NodeAwareMustEpochMapper::get_region_requirement_overlap(
   // If the region requirements have no shared fields, the overlap is zero
   std::set<FieldID> sharedFields;
   for (auto &field : rrb.privilege_fields) {
-    auto it = std::find(rra.privilege_fields.begin(), rra.privilege_fields.end(),
-                        field);
+    auto it = std::find(rra.privilege_fields.begin(),
+                        rra.privilege_fields.end(), field);
     if (it != rra.privilege_fields.end()) {
       sharedFields.insert(field);
     }
@@ -1328,6 +1276,99 @@ int64_t NodeAwareMustEpochMapper::get_region_requirement_overlap(
 
   int64_t numPoints = get_logical_region_overlap(ctx, lra, lrb);
 
+  return numPoints * sharedFieldSize;
+}
 
-  return numPoints * sharedFieldSize; 
+std::vector<std::pair<Processor, Memory>>
+NodeAwareMustEpochMapper::get_gpu_fbs() {
+
+  printf("NodeAwareMustEpochMapper::%s(): GPU-FB affinities\n", __FUNCTION__);
+  std::vector<Machine::ProcessorMemoryAffinity> procMemAffinities;
+  machine.get_proc_mem_affinity(procMemAffinities);
+  for (auto &aff : procMemAffinities) {
+    // find the closes FB mem to each GPU
+    if (aff.p.kind() == Processor::TOC_PROC &&
+        aff.m.kind() == Memory::GPU_FB_MEM) {
+      std::cerr << aff.p << "-" << aff.m << " " << aff.bandwidth << " "
+                << aff.latency << "\n";
+    }
+  }
+
+  std::vector<std::pair<Processor, Memory>> gpus;
+  {
+    // find the highest-bandwidth fb each GPU has access to
+    std::map<Processor, Machine::ProcessorMemoryAffinity> best;
+    for (auto &aff : procMemAffinities) {
+      if (aff.p.kind() == Processor::TOC_PROC &&
+          aff.m.kind() == Memory::GPU_FB_MEM) {
+        auto it = best.find(aff.p);
+        if (it != best.end()) {
+          if (aff.bandwidth > it->second.bandwidth) {
+            it->second = aff;
+          }
+        } else {
+          best[aff.p] = aff;
+        }
+      }
+    }
+
+    size_t i = 0;
+    for (auto &kv : best) {
+      assert(kv.first == kv.second.p);
+      assert(kv.first.kind() == Processor::TOC_PROC);
+      assert(kv.second.m.kind() == Memory::GPU_FB_MEM);
+      log_mapper.spew() << "proc " << kv.first << ": closes mem=" << kv.second.m
+                        << " bw=" << kv.second.bandwidth
+                        << "latency=" << kv.second.latency;
+      std::pair<Processor, Memory> pmp;
+      pmp.first = kv.first;
+      pmp.second = kv.second.m;
+      gpus.push_back(pmp);
+      ++i;
+    }
+  }
+
+  return gpus;
+}
+
+ap::Mat2D<double> NodeAwareMustEpochMapper::get_gpu_distance_matrix(
+    const std::vector<std::pair<Processor, Memory>> &gpus) {
+
+  printf("NodeAwareMustEpochMapper::%s(): GPU memory-memory affinities\n",
+         __FUNCTION__);
+  std::vector<Machine::MemoryMemoryAffinity> memMemAffinities;
+  machine.get_mem_mem_affinity(memMemAffinities);
+  for (auto &aff : memMemAffinities) {
+    log_mapper.spew() << aff.m1 << "-" << aff.m2 << " " << aff.bandwidth << " "
+                      << aff.latency;
+  }
+
+  ap::Mat2D<double> ret(gpus.size(), gpus.size(), 0);
+  size_t i = 0;
+  for (auto &src : gpus) {
+    size_t j = 0;
+    for (auto &dst : gpus) {
+      // TODO: self distance is 0
+      if (src.first == dst.first) {
+        ret.at(i, j) = 0;
+        // Look for a MemoryMemoryAffinity between the GPU fbs and use that
+      } else {
+        bool found = false;
+        for (auto &mma : memMemAffinities) {
+          if (mma.m1 == src.second && mma.m2 == dst.second) {
+            ret.at(i, j) = 1.0 / mma.bandwidth;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          log_mapper.error("couldn't find mem-mem affinity for GPU FBs");
+          assert(false);
+        }
+      }
+      ++j;
+    }
+    ++i;
+  }
+  return ret;
 }
