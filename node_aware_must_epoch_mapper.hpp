@@ -320,6 +320,82 @@ inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
   return bestF;
 }
 
+
+/* greedy swap2 solution to assignment problem
+   Consider all 2-swaps of assignments, and choose the first better one found
+   Do this until no improvements can be found
+
+   objective: minimize total flow * distance product under assignment
+
+   `w`: flow between tasks
+   `d`: distance between agents
+
+   return empty vector if no valid assignment was found
+
+   load-balancing requires that the difference in assigned tasks between
+   any two GPUs is 1.
+ */
+inline std::vector<size_t> solve_ap_swap2(double *costp, const Mat2D<double> &w,
+                                    Mat2D<double> &d) {
+
+  // w and d are square
+  assert(d.shape().is_cube());
+  assert(w.shape().is_cube());
+
+  const int64_t numAgents = d.shape()[0];
+  const int64_t numTasks = w.shape()[0];
+
+  // round-robin assign tasks to agents
+  std::vector<size_t> f(numTasks, 0);
+  for (size_t t = 0; t < numTasks; ++t) {
+    f[t] = t % numAgents;
+  }
+
+  RollingStatistics stats;
+
+  std::vector<size_t> bestF = f;
+  double bestCost = ap::detail::cost(w,d,f);
+  stats.insert(bestCost);
+
+  bool changed = true;
+  while(changed) {
+    changed = false;
+
+    // check all possible swaps
+    for (size_t i = 0; i < numTasks; ++i) {
+      for (size_t j = i + 1; j < numTasks; ++j) {
+        std::vector<size_t> swappedF = f; // swapped f
+        std::swap(swappedF[i], swappedF[j]);
+
+        double swappedCost = detail::cost(w,d,swappedF);
+        stats.insert(swappedCost);
+
+        if (swappedCost < bestCost) {
+          bestCost = swappedCost;
+          bestF = swappedF;
+          changed = true;
+          goto body_end; // fast exit
+        }
+      }
+    }
+
+    body_end:
+    ;
+  }
+
+  if (costp) {
+    *costp = bestCost;
+  }
+
+  std::cerr << "Considered " << stats.count()
+            << " placements: min=" << stats.min() << " avg=" << stats.mean()
+            << " max=" << stats.max() << "\n";
+
+  return bestF;
+}
+
+
+
 } // namespace ap
 
 using namespace Legion;
@@ -671,7 +747,6 @@ void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
   log_mapper.spew("%lu task.regions:", task.regions.size());
   for (auto &rr : task.regions) {
     log_mapper.spew() << rr.region;
-    // log_mapper.spew() << runtime->get_logical_region_
   }
 
   if (task.target_proc.kind() == Processor::TOC_PROC) {
