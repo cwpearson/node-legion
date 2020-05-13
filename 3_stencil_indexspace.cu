@@ -265,9 +265,23 @@ void top_level_task(const Task *task,
 
   Point<2> numElements(17 /*x*/, 16 /*y*/);
   Point<2> numSubregions(3, 3);
-  int numSteps = 1;
+  int numSteps = 2;
   // Check for any command line arguments
-  { const InputArgs &command_args = Runtime::get_input_args(); }
+
+  const InputArgs &command_args = Runtime::get_input_args();
+  for (int i = 1; i < command_args.argc; i++)
+  {
+    if (!strcmp(command_args.argv[i],"-nx"))
+      numElements[0] = atoi(command_args.argv[++i]);
+    if (!strcmp(command_args.argv[i],"-ny"))
+      numElements[1] = atoi(command_args.argv[++i]);
+    if (!strcmp(command_args.argv[i],"-bx"))
+      numSubregions[0] = atoi(command_args.argv[++i]);
+    if (!strcmp(command_args.argv[i],"-by"))
+      numSubregions[1] = atoi(command_args.argv[++i]);
+    if (!strcmp(command_args.argv[i],"-s"))
+      numSteps = atoi(command_args.argv[++i]);
+  }
 
   // Compute domain index space
   Point<2, size_t> lo(0, 0);
@@ -425,7 +439,7 @@ void top_level_task(const Task *task,
     }
 
     // check first derivative for correctness
-    {
+    if (0 == n) {
       IndexTaskLauncher check_launcher(CHECK_TASK_ID, launchSpace,
                                        TaskArgument(NULL, 0), ArgumentMap());
       // write-discard access to center region in output
