@@ -75,6 +75,15 @@ public:
 
   int64_t &operator[](size_t i) noexcept { return x[i]; }
   int64_t const &operator[](size_t i) const noexcept { return x[i]; }
+
+  bool is_cube() const noexcept {
+    for (unsigned i = 1; i < N; ++i) {
+      if (x[i] != x[0]) {
+        return false;
+      }
+    }
+    return true;
+  }
 };
 
 template <typename T> class Mat2D {
@@ -238,8 +247,9 @@ inline std::vector<size_t> solve_qap(double *costp, const Mat2D<double> &w,
 inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
                                     Mat2D<double> &d, const int64_t s) {
 
-  assert(d.shape()[0] == d.shape()[1]);
-  assert(w.shape()[0] == w.shape()[1]);
+  // w and d are square
+  assert(d.shape().is_cube());
+  assert(w.shape().is_cube());
 
   const int64_t numAgents = d.shape()[0];
   const int64_t numTasks = w.shape()[0];
@@ -364,6 +374,14 @@ public:
   slices.push_back(slice);
   ```
 
+  Typically, the idea is that groups of nearby tasks would have locality, so we
+  would group these point tasks into slices, each of which has a rect of point
+  tasks and then assign those groups to procs. At the end of the day, each of
+  those point tasks is still mapped individually.
+
+  Instead, we will treat each point task independently, and create slices of 1.
+  This allows us to figure out which point tasks communicate and which should be
+  on nearby GPUs.
   */
   virtual void slice_task(const MapperContext ctx, const Task &task,
                           const SliceTaskInput &input, SliceTaskOutput &output);
@@ -488,62 +506,62 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
                     << "(): input.domain_is = " << input.domain_is;
   log_mapper.spew() << __FUNCTION__ << "(): input.domain    = " << input.domain;
 
-  // get the frame buffer for each GPU
+  /* Build the GPU distance matrix
+   */
   std::vector<std::pair<Processor, Memory>> gpus = get_gpu_fbs();
+  {
+    log_mapper.spew("GPU numbering:");
+    int i = 0;
+    for (auto p : gpus) {
+      log_mapper.spew() << i << " gpu=" << p.first << " fb=" << p.second;
+    }
+  }
 
-  // get the distance between each pair of GPUs
+
   ap::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
 
-  // data overlap between index task domain points
+  /* Compute the point task domain overlap for all pairs of point tasks.
+  This is the weight matrix in our assignment problem.
+  */
   ap::Mat2D<double> weight(input.domain.get_volume(), input.domain.get_volume(),
                            0);
 
-  switch (input.domain.dim) {
-  case 1: {
-    assert(false);
-  }
-  case 2: {
-    int i = 0;
-    for (PointInDomainIterator<2> pi(input.domain); pi(); ++pi, ++i) {
-      int j = 0;
-      for (PointInDomainIterator<2> pj(input.domain); pj(); ++pj, ++j) {
+  assert(input.domain.dim == 2 && "TODO: only implemented for dim=2");
 
-        int64_t bytes = 0;
-        for (int ri = 0; ri < task.regions.size(); ++ri) {
-          LogicalRegion li = runtime->get_logical_subregion_by_color(
-              ctx, task.regions[ri].partition, *pi);
+  int i = 0;
+  for (PointInDomainIterator<2> pi(input.domain); pi(); ++pi, ++i) {
+    int j = 0;
+    for (PointInDomainIterator<2> pj(input.domain); pj(); ++pj, ++j) {
 
-          // create fake region requirements that move the partition to the
-          // region so we can reuse the region distance code
+      int64_t bytes = 0;
+      for (int ri = 0; ri < task.regions.size(); ++ri) {
+        LogicalRegion li = runtime->get_logical_subregion_by_color(
+            ctx, task.regions[ri].partition, *pi);
+
+        // TODO: is this sketchy
+        // create fake region requirements that move the partition to the
+        // region so we can reuse the region distance code
+        RegionRequirement rra = task.regions[ri];
+        rra.partition = LogicalPartition::NO_PART;
+        rra.region = li;
+        for (int rj = 0; rj < task.regions.size(); ++rj) {
+          LogicalRegion lj = runtime->get_logical_subregion_by_color(
+              ctx, task.regions[rj].partition, *pj);
+
           // TODO this feels sketchy
-          RegionRequirement rra = task.regions[ri];
-          rra.partition = LogicalPartition::NO_PART;
-          rra.region = li;
-          for (int rj = 0; rj < task.regions.size(); ++rj) {
-            LogicalRegion lj = runtime->get_logical_subregion_by_color(
-                ctx, task.regions[rj].partition, *pj);
+          RegionRequirement rrb = task.regions[rj];
+          rrb.partition = LogicalPartition::NO_PART;
+          rrb.region = lj;
 
-            // TODO this feels sketchy
-            RegionRequirement rrb = task.regions[rj];
-            rrb.partition = LogicalPartition::NO_PART;
-            rrb.region = lj;
-
-            int64_t newBytes = get_region_requirement_overlap(ctx, rra, rrb);
-            // std::cerr << i << " " << j << " " << ri << " " << rj << " bytes="
-            // << newBytes << "\n";
-            bytes += newBytes;
-          }
+          int64_t newBytes = get_region_requirement_overlap(ctx, rra, rrb);
+          // std::cerr << i << " " << j << " " << ri << " " << rj << " bytes="
+          // << newBytes << "\n";
+          bytes += newBytes;
         }
-        std::cerr << "slice " << *pi << " " << *pj << " bytes=" << bytes
-                  << "\n";
-        weight.at(i, j) = bytes;
       }
+      std::cerr << "slice " << *pi << " " << *pj << " bytes=" << bytes << "\n";
+      weight.at(i, j) = bytes;
     }
-    break;
-  }
-  case 3: {
-    assert(false);
-  }
   }
 
   printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
@@ -562,6 +580,7 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
 
   nvtxRangePush("solve_ap");
   std::vector<size_t> f = ap::solve_ap(&cost, weight, distance, cardinality);
+  assert(f.size() == weight.shape()[0]);
   nvtxRangePop();
 
   log_mapper.spew() << "assignment";
@@ -573,116 +592,22 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
     log_mapper.spew() << ss.str();
   }
 
-  log_mapper.spew("%lu task.regions:", task.regions.size());
-  for (auto &rr : task.regions) {
-    log_mapper.spew() << "region exists: " << rr.region.exists();
-    log_mapper.spew() << "partition exists: " << rr.partition.exists();
-    log_mapper.spew() << "parent exists: " << rr.parent.exists();
-
-    log_mapper.spew() << "parent";
-    log_mapper.spew() << rr.parent;
-    log_mapper.spew() << rr.parent.get_index_space();
-
-    log_mapper.spew() << runtime->get_index_space_domain(
-        ctx, rr.parent.get_index_space());
-    {
-      log_mapper.spew() << "subregion by partition";
-      log_mapper.spew() << rr.partition;
-      LogicalRegion lsr = runtime->get_logical_subregion(
-          ctx, rr.partition, rr.parent.get_index_space());
-      log_mapper.spew() << lsr;
-      log_mapper.spew() << runtime->get_index_space_domain(
-          ctx, lsr.get_index_space());
+  /* create the slices based on the assignments
+   */
+  {
+    size_t i = 0;
+    for (PointInDomainIterator<2> pir(input.domain); pir(); ++pir, ++i) {
+      TaskSlice slice;
+      // slice subdomain is a single point
+      slice.domain = Rect<2>(*pir, *pir);
+      slice.proc = gpus[f[i]].first;
+      log_mapper.spew() << "assign slice domain " << slice.domain << " to proc "
+                        << slice.proc;
+      slice.recurse = false;
+      slice.stealable = true;
+      output.slices.push_back(slice);
     }
-    // TODO why does this work but the above does not
-    {
-      log_mapper.spew() << "subregion by color";
-      LogicalRegion lr = runtime->get_logical_subregion_by_color(
-          ctx, rr.partition, Point<2>(0, 0));
-      log_mapper.spew() << lr;
-      log_mapper.spew() << runtime->get_index_space_domain(
-          ctx, lr.get_index_space());
-    }
-
-    // TODO: why does the region index space seem to be broken?
-    // IndexSpace is = rr.region.get_index_space();
-    // log_mapper.spew() << is;
   }
-
-  Machine::ProcessorQuery gpuProcQuery(machine);
-  gpuProcQuery.only_kind(Processor::TOC_PROC);
-  std::vector<Processor> gpuProcs(gpuProcQuery.begin(), gpuProcQuery.end());
-
-  // TODO: don't double the procs
-  // double the procs
-  gpuProcs.insert(gpuProcs.end(), gpuProcs[0]);
-
-  log_mapper.spew("%s() found %lu GPUs", __FUNCTION__, gpuProcs.size());
-
-  // IndexSpace _ = input.domain_is;
-  // Domain _ = input.domain;
-
-  switch (input.domain.get_dim()) {
-  case 1: {
-#define __DIM 1
-    DomainT<__DIM> ps = input.domain;
-    log_mapper.spew() << "bounds=" << ps.bounds << " into " << gpuProcs.size()
-                      << " GPUs";
-    Point<__DIM> numBlocks = DefaultMapper::default_select_num_blocks<__DIM>(
-        gpuProcs.size(), ps.bounds);
-    log_mapper.spew() << "blocks=" << numBlocks;
-    log_mapper.spew("%s() use DefaultMapper::default_decompose_points",
-                    __FUNCTION__);
-    DomainT<__DIM, coord_t> pointSpace = input.domain;
-    DefaultMapper::default_decompose_points(
-        pointSpace, gpuProcs, numBlocks, false /*recurse*/,
-        false /*disable stealing*/, output.slices);
-    break;
-#undef __DIM
-  }
-  case 2: {
-#define __DIM 2
-    DomainT<__DIM> ps = input.domain;
-    log_mapper.spew() << "bounds=" << ps.bounds << " into " << gpuProcs.size()
-                      << " GPUs";
-    Point<__DIM> numBlocks = DefaultMapper::default_select_num_blocks<__DIM>(
-        gpuProcs.size(), ps.bounds);
-    log_mapper.spew() << "blocks=" << numBlocks;
-    log_mapper.spew("%s() use DefaultMapper::default_decompose_points",
-                    __FUNCTION__);
-    DomainT<__DIM, coord_t> pointSpace = input.domain;
-    DefaultMapper::default_decompose_points(
-        pointSpace, gpuProcs, numBlocks, false /*recurse*/,
-        false /*disable stealing*/, output.slices);
-    break;
-#undef __DIM
-  }
-  case 3: {
-#define __DIM 3
-    DomainT<__DIM> ps = input.domain;
-    log_mapper.spew() << "bounds=" << ps.bounds << " into " << gpuProcs.size()
-                      << " GPUs";
-    Point<__DIM> numBlocks = DefaultMapper::default_select_num_blocks<__DIM>(
-        gpuProcs.size(), ps.bounds);
-    log_mapper.spew() << "blocks=" << numBlocks;
-    log_mapper.spew("%s() use DefaultMapper::default_decompose_points",
-                    __FUNCTION__);
-    DomainT<__DIM, coord_t> pointSpace = input.domain;
-    DefaultMapper::default_decompose_points(
-        pointSpace, gpuProcs, numBlocks, false /*recurse*/,
-        false /*disable stealing*/, output.slices);
-    break;
-#undef __DIM
-  }
-  }
-
-  log_mapper.spew("output.slices");
-  for (auto &slice : output.slices) {
-    log_mapper.spew() << slice.domain;
-  }
-
-  // log_mapper.spew("%s() use DefaultMapper::slice_task", __FUNCTION__);
-  // DefaultMapper::slice_task(ctx, task, input, output);
   log_mapper.spew("[exit] %s()", __FUNCTION__);
 }
 
