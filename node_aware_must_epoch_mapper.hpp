@@ -524,7 +524,7 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
   for (size_t i = 0; i < distance.shape()[1]; ++i) {
     printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
     for (size_t j = 0; j < distance.shape()[0]; ++j) {
-      printf(" %6f", distance.at(i, j));
+      printf(" %.2e", distance.at(i, j));
     }
     printf("\n");
   }
@@ -536,6 +536,19 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
                            0);
 
   assert(input.domain.dim == 2 && "TODO: only implemented for dim=2");
+
+  {
+    log_mapper.spew("point space numbering:");
+    int i = 0;
+    for (PointInDomainIterator<2> pir(input.domain); pir(); ++pir, ++i) {
+      log_mapper.spew() << i << " p=" << *pir;
+      for (int r = 0; r < task.regions.size(); ++r) {
+        LogicalRegion li = runtime->get_logical_subregion_by_color(
+            ctx, task.regions[r].partition, *pir);
+        log_mapper.spew() << "  " << r << " " << runtime->get_index_space_domain(ctx, li.get_index_space());
+      }
+    }
+  }
 
   int i = 0;
   for (PointInDomainIterator<2> pi(input.domain); pi(); ++pi, ++i) {
@@ -568,7 +581,7 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
           bytes += newBytes;
         }
       }
-      std::cerr << "slice " << *pi << " " << *pj << " bytes=" << bytes << "\n";
+      // std::cerr << "slice " << *pi << " " << *pj << " bytes=" << bytes << "\n";
       weight.at(i, j) = bytes;
     }
   }
@@ -577,7 +590,7 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
   for (size_t i = 0; i < weight.shape()[1]; ++i) {
     printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
     for (size_t j = 0; j < weight.shape()[0]; ++j) {
-      printf(" %6f", weight.at(i, j));
+      printf(" %.2e", weight.at(i, j));
     }
     printf("\n");
   }
