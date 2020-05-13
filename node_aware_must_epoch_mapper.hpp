@@ -520,6 +520,15 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
 
   ap::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
 
+  printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
+  for (size_t i = 0; i < distance.shape()[1]; ++i) {
+    printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
+    for (size_t j = 0; j < distance.shape()[0]; ++j) {
+      printf(" %6f", distance.at(i, j));
+    }
+    printf("\n");
+  }
+
   /* Compute the point task domain overlap for all pairs of point tasks.
   This is the weight matrix in our assignment problem.
   */
@@ -564,7 +573,7 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
     }
   }
 
-  printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
+  printf("NodeAwareMustEpochMapper::%s(): weight matrix\n", __FUNCTION__);
   for (size_t i = 0; i < weight.shape()[1]; ++i) {
     printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
     for (size_t j = 0; j < weight.shape()[0]; ++j) {
@@ -575,7 +584,7 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
 
   double cost;
   size_t cardinality =
-      weight.shape()[0] + distance.shape()[0] - 1 / distance.shape()[0];
+      (weight.shape()[0] + distance.shape()[0] - 1) / distance.shape()[0];
   log_mapper.spew("%s(): cardinality=%lu", __FUNCTION__, cardinality);
 
   nvtxRangePush("solve_ap");
