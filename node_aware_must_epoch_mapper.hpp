@@ -238,14 +238,16 @@ inline std::vector<size_t> solve_qap(double *costp, const Mat2D<double> &w,
 
    objective: minimize total flow * distance product under assignment
 
-   `s`: cardinality, maximum amount of tasks per agent
    `w`: flow between tasks
    `d`: distance between agents
 
    return empty vector if no valid assignment was found
+
+   load-balancing requires that the difference in assigned tasks between
+   any two GPUs is 1.
  */
 inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
-                                    Mat2D<double> &d, const int64_t s) {
+                                    Mat2D<double> &d) {
 
   // w and d are square
   assert(d.shape().is_cube());
@@ -257,6 +259,17 @@ inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
   std::vector<size_t> f(numTasks, 0);
 
   RollingStatistics stats;
+
+  auto is_lb_okay = [&]() -> bool {
+
+  std::vector<int64_t> hist(numAgents, 0);
+  for (auto &e : f) ++hist[e];
+  for (auto &i : hist)
+    for (auto &j : hist)
+      if (std::abs(i - j) > 1)
+        return false;
+  return true;
+  };
 
   auto next_f = [&]() -> bool {
     // if f == [numAgents-1, numAgents-1, ...]
@@ -283,16 +296,9 @@ inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
   std::vector<size_t> bestF;
   double bestCost = std::numeric_limits<double>::infinity();
   do {
-    // if cardinality of any assignment is too large, skip cost check
-    bool cardCheckFail = false;
-    for (int64_t a = 0; a < numAgents; ++a) {
-      if (std::count(f.begin(), f.end(), a) > s) {
-        cardCheckFail = true;
-        break;
-      }
-    }
-    if (cardCheckFail) {
-      continue;
+    // only compute cost if load-balancing is okay
+    if (!is_lb_okay()) {
+	    continue;
     }
 
     const double cost = detail::cost(w, d, f);
@@ -595,13 +601,9 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
     printf("\n");
   }
 
-  double cost;
-  size_t cardinality =
-      (weight.shape()[0] + distance.shape()[0] - 1) / distance.shape()[0];
-  log_mapper.spew("%s(): cardinality=%lu", __FUNCTION__, cardinality);
-
   nvtxRangePush("solve_ap");
-  std::vector<size_t> f = ap::solve_ap(&cost, weight, distance, cardinality);
+  double cost;
+  std::vector<size_t> f = ap::solve_ap(&cost, weight, distance);
   assert(f.size() == weight.shape()[0]);
   nvtxRangePop();
 
@@ -1030,20 +1032,12 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     printf("\n");
   }
 
-  // Max task -> agent assignment
-  // if more tasks than agents, distribute tasks
-  // if more agents than tasks, max of one task per agent
-  // TODO: for a must-epoch task, we should never have more tasks than agents
-  const int64_t cardinality = (overlap.size() + gpus.size() - 1) / gpus.size();
-  printf("NodeAwareMustEpochMapper::%s(): max cardinality %ld\n", __FUNCTION__,
-         cardinality);
-
   // TODO: for a must-epoch task, we should never have more tasks than agents,
   // so solve_ap only needs to work for distance >= weight
   nvtxRangePush("solve_ap");
   double cost;
   std::vector<size_t> assignment =
-      ap::solve_ap(&cost, weight, distance, cardinality);
+      ap::solve_ap(&cost, weight, distance);
   nvtxRangePop(); // solve_ap
   if (assignment.empty()) {
     std::cerr << "couldn't find an assignment\n";
