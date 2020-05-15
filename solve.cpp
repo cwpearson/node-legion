@@ -174,9 +174,11 @@ ap_brute_force(C *costp,
     *costp = bestCost;
   }
 
+#if 0
   std::cerr << "Considered " << stats.count()
             << " placements: min=" << stats.min() << " avg=" << stats.mean()
             << " max=" << stats.max() << "\n";
+#endif
 
   return bestF;
 }

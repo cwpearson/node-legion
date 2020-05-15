@@ -1,10 +1,10 @@
 #include "solve.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <functional>
 #include <numeric>
-#include <cmath>
 #include <sstream>
 
 typedef std::chrono::high_resolution_clock Clock;
@@ -113,20 +113,24 @@ struct Bencher {
   Bencher(int64_t _reps, float timeoutSecs)
       : reps(_reps), timeout(timeoutSecs) {}
 
+  Bencher(float timeoutSecs)
+      : reps(std::numeric_limits<int64_t>::max()), timeout(timeoutSecs) {}
+
   Duration min, avg, max;
   int64_t count;
   std::vector<Duration> runs;
+  std::string stopReason;
 
   double stddev() {
-      if (runs.size() < 2) {
-          return std::numeric_limits<double>::infinity();
-      }
+    if (runs.size() < 2) {
+      return std::numeric_limits<double>::infinity();
+    }
 
-      double acc = 0;
-      for (size_t i = 0; i < runs.size(); ++i) {
-          acc += std::pow(runs[i].count() - avg.count(), 2);
-      }
-      return std::sqrt(acc / (runs.size() - 1));
+    double acc = 0;
+    for (size_t i = 0; i < runs.size(); ++i) {
+      acc += std::pow(runs[i].count() - avg.count(), 2);
+    }
+    return std::sqrt(acc / (runs.size() - 1));
   }
 
   void go(std::function<void()> f) {
@@ -147,29 +151,29 @@ struct Bencher {
         min = elapsed;
       if (elapsed > max)
         max = elapsed;
-
     }
     avg = time / count;
 
-
+    if (time > timeout) {
+      stopReason = "timeout";
+    } else {
+      stopReason = "finish";
+    }
   }
 };
 
 int main(void) {
 
-  int64_t nAgents = 6;
-  int64_t nTasks = 9;
+  int64_t nAgents = 4;
+  int64_t nTasks = 7;
 
-  std::cerr << "d\n";
   solve::Mat2D<double> d =
       make_block_diagonal_matrix((nAgents + 1) / 2, nAgents, 0.5, 1);
-  std::cerr << "w\n";
   solve::Mat2D<int64_t> w = make_random_symmetric_matrix(nTasks);
-  std::cerr << "solve\n";
 
   double cost;
   std::vector<size_t> f;
-  Bencher b(5, 100);
+  Bencher b(2.0);
   b.go([&]() { f = solve::ap_brute_force(&cost, w, d); });
 
   std::cerr << "f: ";
@@ -178,5 +182,6 @@ int main(void) {
   }
   std::cerr << "\n";
 
-  std::cerr << b.count << "3 runs " << b.avg.count() << "+-" << b.stddev() << "\n";
+  std::cerr << "("<<b.stopReason << ") " << b.count << " runs " << std::scientific <<  b.avg.count()
+            << "+-" << b.stddev() << "\n";
 }
