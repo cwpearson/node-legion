@@ -17,10 +17,10 @@ typedef std::chrono::duration<float> Duration;
 /* make an n x n block-diagonal matrix with block size bs, with diagonals of 0,
  * block values of `blockVal`, and off-diagonal values of `offVal`.
  */
-std::vector<int64_t> make_block_diagonal_matrix(const size_t bs, const size_t n,
-                                                const int64_t blockVal,
-                                                const int64_t offVal) {
-  std::vector<int64_t> ret(n * n, offVal);
+std::vector<double> make_block_diagonal_matrix(const size_t bs, const size_t n,
+                                                const double blockVal,
+                                                const double offVal) {
+  std::vector<double> ret(n * n, offVal);
 
   // block starting positions
   for (size_t b = 0; b < n; b += bs) {
@@ -109,7 +109,7 @@ std::vector<int64_t> make_random_symmetric_matrix(size_t n) {
 }
 
 std::vector<size_t> solve(const std::vector<int64_t> &_w,
-                          const std::vector<double> &_d) {
+                          const std::vector<double> &_d, int timeout = 1000) {
 
   assert(_w.size() == _d.size());
   const size_t n = std::sqrt(_w.size());
@@ -118,7 +118,7 @@ std::vector<size_t> solve(const std::vector<int64_t> &_w,
   auto wallStart = Clock::now();
 
   z3::context ctx;
-  ctx.set("timeout", 4000);
+  ctx.set("timeout", timeout);
 
   // assignment to be solved for
   z3::expr_vector f(ctx);
@@ -179,54 +179,55 @@ std::vector<size_t> solve(const std::vector<int64_t> &_w,
   z3::expr sumCost = z3::sum(partials);
 
   opt.minimize(maxCost);
-  opt.minimize(sumCost);
+  // opt.minimize(sumCost);
 
   Duration setupElapsed = Clock::now() - wallStart;
-  std::cout << "setup: " << setupElapsed.count() << "\n";
+
 
   z3::check_result res;
+    auto start = Clock::now();
   try {
     {
-      auto start = Clock::now();
       res = opt.check();
-      Duration dur = Clock::now() - start;
-      std::cout << "opt: " << dur.count() << "\n";
     }
   } catch (const z3::exception &e) {
     std::cerr << "EXCEPTION: " << e.what() << "\n";
     res = z3::unsat;
   }
+  Duration dur = Clock::now() - start;
 
   if (z3::sat == res) {
-    std::cout << "finished!\n";
+    std::cout << "(finish)  ";
   } else {
-    std::cout << "timeout?\n";
+    std::cout << "(timeout) ";
   }
+
+  std::cout << "setup=" << setupElapsed.count() << " opt=" << dur.count();
 
   z3::model m = opt.get_model();
 
   std::vector<size_t> retF;
 
   if (!m.eval(maxCost).is_numeral()) {
-    std::cerr << "failed to find a solution\n";
+    std::cout << " max=-- sum=--" << "\n";
     return retF;
   }
 
   {
     int64_t num, den;
     if (Z3_get_numeral_rational_int64(ctx, m.eval(maxCost), &num, &den)) {
-      std::cout << "max: " << double(num) / den << "\n";
+      std::cout << " max=" << double(num) / den;
     } else {
-      std::cout << "max: " << m.eval(maxCost) << "\n";
+      std::cout << " max=" << m.eval(maxCost);
     }
   }
 
   {
     int64_t num, den;
     if (Z3_get_numeral_rational_int64(ctx, m.eval(sumCost), &num, &den)) {
-      std::cout << "cost: " << double(num) / den << "\n";
+      std::cout << " sum=" << double(num) / den << "\n";
     } else {
-      std::cout << "cost: " << m.eval(sumCost) << "\n";
+      std::cout << " sum=" << m.eval(sumCost) << "\n";
     }
   }
 
@@ -242,8 +243,8 @@ std::vector<size_t> solve(const std::vector<int64_t> &_w,
 
 int main(void) {
 
-  int numTasksX = 2;
-  int numTasksY = 4;
+  int numTasksX = 3;
+  int numTasksY = 3;
   const int numTasks = numTasksX * numTasksY;
   const int numAgents = numTasks;
   int bsx = 20;
@@ -263,38 +264,29 @@ int main(void) {
   }
 
   // distance matrix
-  std::vector<double> d;
-  for (int i = 0; i < numAgents; ++i) {
-    for (int j = 0; j < numAgents; ++j) {
-      double val;
-      if (i == j) {
-        val = 0;
-      } else if (i < numAgents / 2 && j < numAgents / 2) {
-        val = 0.6;
-      } else if (i >= numAgents / 2 && j >= numAgents / 2) {
-        val = 0.6;
-      } else {
-        val = 1;
-      }
-      d.push_back(val);
-    }
+  std::vector<double> d = make_block_diagonal_matrix((numAgents + 1)/2, numAgents, 0.6, 1.0);
+
+  // std::cout << "dist:\n";
+  // for (int i = 0; i < numAgents; ++i) {
+  //   for (int j = 0; j < numAgents; ++j) {
+  //     std::cout << std::setw(4) << d[i * numAgents + j] << " ";
+  //   }
+  //   std::cout << "\n";
+  // }
+
+
+  for (auto timeout : {16, 32, 64, 128, 256, 500, 1000, 2000, 4096, 8192, 16384, 32768, 65536}) {
+    std::vector<size_t> f = solve(w, d, timeout);
   }
 
-  std::cout << "dist:\n";
-  for (int i = 0; i < numAgents; ++i) {
-    for (int j = 0; j < numAgents; ++j) {
-      std::cout << std::setw(4) << d[i * numAgents + j] << " ";
-    }
-    std::cout << "\n";
-  }
+  // std::cout << "assignment:\n";
+  // for (int i = 0; i < numTasksY; ++i) {
+  //   for (int j = 0; j < numTasksX; ++j) {
+  //     std::cout << f[i * numTasksX + j] << " ";
+  //   }
+  //   std::cout << "\n";
+  // }
 
-  std::vector<size_t> f = solve(w, d);
-
-  std::cout << "assignment: ";
-  for (auto &e : f) {
-    std::cout << e << " ";
-  }
-  std::cout << "\n";
 
   // https://stackoverflow.com/questions/23064533/statistics-in-z3, led to
   // https://stackoverflow.com/questions/18491922/interpretation-of-z3-statistics

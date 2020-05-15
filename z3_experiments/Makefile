@@ -4,9 +4,11 @@
 all: main.cpp qap
 	g++ -I z3-4.8.8-x64-ubuntu-16.04/include \
 	    -L z3-4.8.8-x64-ubuntu-16.04/bin  \
+		-O2 \
 	    -Wall -Wextra -Wpedantic main.cpp -o main -lz3
 
 qap: qap.cpp
 	g++ -I z3-4.8.8-x64-ubuntu-16.04/include \
 	    -L z3-4.8.8-x64-ubuntu-16.04/bin  \
+		-O2 \
 	    -Wall -Wextra -Wpedantic $< -o $@ -lz3
