@@ -70,8 +70,8 @@ std::vector<double> make_stencil_weight_matrix(int64_t nx, int64_t ny,
  */
 std::vector<double> make_random_symmetric_matrix(size_t n) {
   std::vector<double> ret(n * n);
-  for (int i = 0; i < n; ++i) {
-    for (int j = i; j < n; ++j) {
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i; j < n; ++j) {
       double val = double(rand()) / RAND_MAX;
       ret[i * n + j] = val;
       ret[j * n + i] = val;
@@ -221,8 +221,8 @@ int main(void) {
   // this weight is only right for one task per agent.
   // with multiple tasks per agent, we need to sum up the communication between
   // each pair of agents and use that for the cost.
-  const z3::optimize::handle h = opt.minimize(maxCost);
-  const z3::optimize::handle h2 = opt.minimize(sumCost);
+  opt.minimize(maxCost);
+  opt.minimize(sumCost);
 
 //   std::cerr << opt << "\n";
   std::cerr << "go!\n";
@@ -258,14 +258,14 @@ int main(void) {
     }
     
     std::cerr << "partials:\n";
-    for (size_t i = 0; i < numAgents; ++i) {
+    for (int i = 0; i < numAgents; ++i) {
         for (int j = 0; j < numAgents; ++j) {
             std::cerr << std::setw(5) << m.eval(partials[i * numAgents + j]) << " ";
         }
         std::cerr << "\n";
     }
 
-    for (size_t i = 0; i < numTasks; ++i) {
+    for (int i = 0; i < numTasks; ++i) {
       std::cout << "task " << i << " -> " << m.eval(f[i]) << "\n";
     }
   }

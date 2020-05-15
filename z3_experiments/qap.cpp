@@ -1,8 +1,8 @@
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <vector>
-#include <chrono>
 
 // use z3 to optimize the assignment? its an integer programming thing?
 #include "z3++.h"
@@ -13,6 +13,31 @@
 
 typedef std::chrono::high_resolution_clock Clock;
 typedef std::chrono::duration<float> Duration;
+
+/* make an n x n block-diagonal matrix with block size bs, with diagonals of 0,
+ * block values of `blockVal`, and off-diagonal values of `offVal`.
+ */
+std::vector<int64_t> make_block_diagonal_matrix(const size_t bs, const size_t n,
+                                                const int64_t blockVal,
+                                                const int64_t offVal) {
+  std::vector<int64_t> ret(n * n, offVal);
+
+  // block starting positions
+  for (size_t b = 0; b < n; b += bs) {
+    // fill in block
+    for (size_t i = b; i < b + bs && i < n; ++i) {
+      for (size_t j = b; j < b + bs && j < n; ++j) {
+        if (i == j) {
+          ret[i * n + j] = 0;
+        } else {
+          ret[i * n + j] = blockVal;
+        }
+      }
+    }
+  }
+
+  return ret;
+}
 
 /* `nx` * `ny` tasks, comm for stencil `order`
  */
@@ -73,8 +98,8 @@ std::vector<int64_t> make_stencil_weight_matrix(int64_t nx, int64_t ny,
  */
 std::vector<int64_t> make_random_symmetric_matrix(size_t n) {
   std::vector<int64_t> ret(n * n);
-  for (int i = 0; i < n; ++i) {
-    for (int j = i; j < n; ++j) {
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i; j < n; ++j) {
       int64_t val = rand() % n;
       ret[i * n + j] = val;
       ret[j * n + i] = val;
@@ -87,17 +112,17 @@ std::vector<size_t> solve(const std::vector<int64_t> &_w,
                           const std::vector<double> &_d) {
 
   assert(_w.size() == _d.size());
-  const int64_t n = std::sqrt(_w.size());
+  const size_t n = std::sqrt(_w.size());
   assert(n * n == _w.size() && "expected w and d to be square");
 
-auto wallStart = Clock::now();
+  auto wallStart = Clock::now();
 
   z3::context ctx;
   ctx.set("timeout", 4000);
 
   // assignment to be solved for
   z3::expr_vector f(ctx);
-  for (int i = 0; i < n; ++i) {
+  for (size_t i = 0; i < n; ++i) {
     std::stringstream name;
     name << "f_" << i;
     f.push_back(ctx.int_const(name.str().c_str()));
@@ -105,8 +130,8 @@ auto wallStart = Clock::now();
 
   // convert weight matrix to z3 variables
   z3::expr_vector w(ctx);
-  for (int i = 0; i < n; ++i) {
-    for (int j = 0; j < n; ++j) {
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = 0; j < n; ++j) {
       // std::stringstream valStr;
       // valStr << _w[i * n + j];
       w.push_back(ctx.int_val(_w[i * n + j]));
@@ -115,8 +140,8 @@ auto wallStart = Clock::now();
 
   // convert distance matrix to z3 array, since we index into it through f
   z3::expr d = z3::const_array(ctx.int_sort(), ctx.real_val(0));
-  for (int i = 0; i < n; ++i) {
-    for (int j = 0; j < n; ++j) {
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = 0; j < n; ++j) {
       // std::stringstream valStr;
       // valStr << _d[i * n + j];
       d = z3::store(d, i * n + j, _d[i * n + j]);
@@ -126,8 +151,9 @@ auto wallStart = Clock::now();
   z3::optimize opt(ctx);
 
   // All agents are numbered 0..n, so restrict space of 0 <= f[i] < n
-  for (int i = 0; i < n; ++i) {
-    opt.add(f[i] >= 0 && f[i] < n);
+  for (size_t i = 0; i < n; ++i) {
+    opt.add(f[i] >= 0);
+    opt.add(f[i] < int(n));
   }
 
   // each agent should appear once in f
@@ -135,17 +161,17 @@ auto wallStart = Clock::now();
 
   // partial products for cost function
   z3::expr_vector partials(ctx);
-  for (int i = 0; i < n; ++i) {
-    for (int j = 0; j < n; ++j) {
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = 0; j < n; ++j) {
       z3::expr wij = w[i * n + j];
-      z3::expr dij = z3::select(d, f[i] * n + f[j]);
+      z3::expr dij = z3::select(d, f[i] * int(n) + f[j]);
       partials.push_back(wij * dij);
     }
   }
 
   // maximum communication cost
   z3::expr maxCost = partials[0];
-  for (int i = 1; i < n * n; ++i) {
+  for (size_t i = 1; i < n * n; ++i) {
     maxCost = z3::max(maxCost, partials[i]);
   }
 
@@ -162,9 +188,9 @@ auto wallStart = Clock::now();
   try {
     {
       auto start = Clock::now();
-    res = opt.check();
-    Duration dur = Clock::now() - start;
-    std::cout << "opt: " << dur.count() << "\n";
+      res = opt.check();
+      Duration dur = Clock::now() - start;
+      std::cout << "opt: " << dur.count() << "\n";
     }
   } catch (const z3::exception &e) {
     std::cerr << "EXCEPTION: " << e.what() << "\n";
@@ -210,6 +236,8 @@ auto wallStart = Clock::now();
       retF.push_back(fi);
     }
   }
+
+  return retF;
 }
 
 int main(void) {
@@ -227,8 +255,8 @@ int main(void) {
   w = make_stencil_weight_matrix(numTasksX, numTasksY, bsx, bsy, order);
 
   std::cout << "weight:\n";
-  for (size_t i = 0; i < numTasks; ++i) {
-    for (size_t j = 0; j < numTasks; ++j) {
+  for (int i = 0; i < numTasks; ++i) {
+    for (int j = 0; j < numTasks; ++j) {
       std::cout << std::setw(4) << w[i * numTasks + j] << " ";
     }
     std::cout << "\n";
@@ -253,8 +281,8 @@ int main(void) {
   }
 
   std::cout << "dist:\n";
-  for (size_t i = 0; i < numAgents; ++i) {
-    for (size_t j = 0; j < numAgents; ++j) {
+  for (int i = 0; i < numAgents; ++i) {
+    for (int j = 0; j < numAgents; ++j) {
       std::cout << std::setw(4) << d[i * numAgents + j] << " ";
     }
     std::cout << "\n";
