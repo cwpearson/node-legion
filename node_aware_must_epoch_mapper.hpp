@@ -13,201 +13,15 @@
 
 #include <nvToolsExt.h>
 
+#include "solve.hpp"
+
 /* assignment problem utilities */
 namespace ap {
 
-struct RollingStatistics {
-  RollingStatistics() { reset(); }
-  size_t n;
-  double sum_;
-  double min_;
-  double max_;
-
-  void reset() {
-    n = 0;
-    sum_ = 0;
-    min_ = std::numeric_limits<double>::infinity();
-    max_ = -1 * std::numeric_limits<double>::infinity();
-  }
-
-  void insert(double d) {
-    ++n;
-    sum_ += d;
-    min_ = std::min(min_, d);
-    max_ = std::max(max_, d);
-  }
-
-  double mean() const noexcept { return sum_ / n; }
-  double min() const noexcept { return min_; }
-  double max() const noexcept { return max_; }
-  double count() const noexcept { return n; }
-};
-
-template <unsigned N> class Extent {
-  int64_t x[N];
-
-public:
-  Extent() = default;
-  Extent(int64_t _x[N]) { x = _x; }
-  Extent(Extent &&other) = default;
-  Extent(const Extent &other) = default;
-
-  Extent &operator=(Extent &&other) = default;
-  Extent &operator=(const Extent &other) = default;
-
-  uint64_t flatten() const noexcept {
-    int64_t p = x[0];
-    for (unsigned i = 1; i < N; ++i) {
-      p *= x[i];
-    }
-    return p;
-  }
-  bool operator==(const Extent &rhs) const noexcept {
-    bool ret = true;
-    for (unsigned i = 0; i < N; ++i) {
-      ret &= (x[i] == rhs.x[i]);
-    }
-    return ret;
-  }
-  bool operator!=(const Extent &rhs) const noexcept {
-    return !((*this) == rhs);
-  }
-
-  int64_t &operator[](size_t i) noexcept { return x[i]; }
-  int64_t const &operator[](size_t i) const noexcept { return x[i]; }
-
-  bool is_cube() const noexcept {
-    for (unsigned i = 1; i < N; ++i) {
-      if (x[i] != x[0]) {
-        return false;
-      }
-    }
-    return true;
-  }
-};
-
-template <typename T> class Mat2D {
-private:
-  void swap(Mat2D &other) noexcept {
-    std::swap(data_, other.data_);
-    std::swap(rect_, other.rect_);
-  }
-
-public:
-  std::vector<T> data_;
-  Extent<2> rect_;
-
-  Mat2D() {
-    rect_[0] = 0;
-    rect_[1] = 0;
-  }
-  Mat2D(int64_t x, int64_t y) : data_(x * y) {
-    rect_[0] = x;
-    rect_[1] = y;
-  }
-  Mat2D(int64_t x, int64_t y, const T &v) : data_(x * y, v) {
-    rect_[0] = x;
-    rect_[1] = y;
-  }
-  Mat2D(Extent<2> s) : Mat2D(s[0], s[1]) {}
-  Mat2D(Extent<2> s, const T &val) : Mat2D(s[0], s[1], val) {}
-
-  Mat2D(const Mat2D &other) = default;
-  Mat2D &operator=(const Mat2D &rhs) = default;
-  Mat2D(Mat2D &&other) = default;
-  Mat2D &operator=(Mat2D &&rhs) = default;
-
-  inline T &at(int64_t i, int64_t j) noexcept {
-    assert(i < rect_[1]);
-    assert(j < rect_[0]);
-    return data_[i * rect_[0] + j];
-  }
-  inline const T &at(int64_t i, int64_t j) const noexcept {
-    assert(i < rect_[1]);
-    assert(j < rect_[0]);
-    return data_[i * rect_[0] + j];
-  }
-
-  /* grow or shrink to [x,y], preserving top-left corner of matrix */
-  void resize(int64_t x, int64_t y) {
-    Mat2D mat(x, y);
-
-    const int64_t copyRows = std::min(mat.rect_[1], rect_[1]);
-    const int64_t copyCols = std::min(mat.rect_[0], rect_[0]);
-
-    for (int64_t i = 0; i < copyRows; ++i) {
-      std::memcpy(&mat.at(i, 0), &at(i, 0), copyCols * sizeof(T));
-    }
-    swap(mat);
-  }
-
-  inline const Extent<2> &shape() const noexcept { return rect_; }
-
-  bool operator==(const Mat2D &rhs) const noexcept {
-    if (rect_ != rhs.rect_) {
-      return false;
-    }
-    for (uint64_t i = 0; i < rect_[1]; ++i) {
-      for (uint64_t j = 0; j < rect_[0]; ++j) {
-        if (data_[i * rect_[0] + j] != rhs.data_[i * rect_[0] + j]) {
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-
-  template <typename S> Mat2D &operator/=(const S &s) {
-    for (uint64_t i = 0; i < rect_[1]; ++i) {
-      for (uint64_t j = 0; j < rect_[0]; ++j) {
-        data_[i * rect_[0] + j] /= s;
-      }
-    }
-    return *this;
-  }
-};
-
-namespace detail {
-
-inline double cost_product(double we, double de) {
-  if (0 == we || 0 == de) {
-    return 0;
-  } else {
-    return we * de;
-  }
-}
-
-inline double cost(const Mat2D<double> &w,      // weight
-                   const Mat2D<double> &d,      // distance
-                   const std::vector<size_t> &f // agent for each task
-) {
-  assert(w.shape()[0] == w.shape()[1]);
-  assert(d.shape()[0] == d.shape()[1]);
-  assert(w.shape()[0] == f.size()); // one weight per task
-
-  double ret = 0;
-
-  for (size_t a = 0; a < w.shape()[1]; ++a) {
-    for (size_t b = 0; b < w.shape()[0]; ++b) {
-      double p;
-      size_t fa = f[a];
-      size_t fb = f[b];
-      assert(fa < d.shape()[0] && "task assigned to non-existant agent");
-      assert(fb < d.shape()[1] && "task assigned to non-existant agent");
-      p = cost_product(w.at(a, b), d.at(f[a], f[b]));
-      ret += p;
-    }
-  }
-
-  return ret;
-}
-
-} // namespace detail
-
 /* brute-force solution to QAP, placing the final cost in costp if not null
  */
-inline std::vector<size_t> solve_qap(double *costp, const Mat2D<double> &w,
-                                     Mat2D<double> &d) {
+inline std::vector<size_t> solve_qap(double *costp, const solve::Mat2D<int64_t> &w,
+                                     solve::Mat2D<double> &d) {
 
   assert(w.shape() == d.shape());
   assert(w.shape()[0] == d.shape()[1]);
@@ -218,9 +32,9 @@ inline std::vector<size_t> solve_qap(double *costp, const Mat2D<double> &w,
   }
 
   std::vector<size_t> bestF = f;
-  double bestCost = detail::cost(w, d, f);
+  double bestCost = solve::cost(w, d, f);
   do {
-    const double cost = detail::cost(w, d, f);
+    const double cost = solve::cost(w, d, f);
     if (bestCost > cost) {
       bestF = f;
       bestCost = cost;
@@ -233,93 +47,6 @@ inline std::vector<size_t> solve_qap(double *costp, const Mat2D<double> &w,
 
   return bestF;
 }
-
-/* brute-force solution to assignment problem
-
-   objective: minimize total flow * distance product under assignment
-
-   `w`: flow between tasks
-   `d`: distance between agents
-
-   return empty vector if no valid assignment was found
-
-   load-balancing requires that the difference in assigned tasks between
-   any two GPUs is 1.
- */
-inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
-                                    Mat2D<double> &d) {
-
-  // w and d are square
-  assert(d.shape().is_cube());
-  assert(w.shape().is_cube());
-
-  const int64_t numAgents = d.shape()[0];
-  const int64_t numTasks = w.shape()[0];
-
-  std::vector<size_t> f(numTasks, 0);
-
-  RollingStatistics stats;
-
-  auto is_lb_okay = [&]() -> bool {
-
-  std::vector<int64_t> hist(numAgents, 0);
-  for (auto &e : f) ++hist[e];
-  for (auto &i : hist)
-    for (auto &j : hist)
-      if (std::abs(i - j) > 1)
-        return false;
-  return true;
-  };
-
-  auto next_f = [&]() -> bool {
-    // if f == [numAgents-1, numAgents-1, ...]
-    if (std::all_of(f.begin(), f.end(), [&](size_t u) {
-          return u == (numAgents > 0 ? numAgents - 1 : 0);
-        })) {
-      return false;
-    }
-
-    bool carry;
-    int64_t i = 0;
-    do {
-      carry = false;
-      ++f[i];
-      if (f[i] >= numAgents) {
-        f[i] = 0;
-        ++i;
-        carry = true;
-      }
-    } while (true == carry);
-    return true;
-  };
-
-  std::vector<size_t> bestF;
-  double bestCost = std::numeric_limits<double>::infinity();
-  do {
-    // only compute cost if load-balancing is okay
-    if (!is_lb_okay()) {
-	    continue;
-    }
-
-    const double cost = detail::cost(w, d, f);
-    stats.insert(cost);
-    if (bestCost > cost) {
-      bestF = f;
-      bestCost = cost;
-    }
-  } while (next_f());
-
-  if (costp) {
-    *costp = bestCost;
-  }
-
-  std::cerr << "Considered " << stats.count()
-            << " placements: min=" << stats.min() << " avg=" << stats.mean()
-            << " max=" << stats.max() << "\n";
-
-  return bestF;
-}
-
 
 /* greedy swap2 solution to assignment problem
    Consider all 2-swaps of assignments, and choose the first better one found
@@ -335,8 +62,8 @@ inline std::vector<size_t> solve_ap(double *costp, const Mat2D<double> &w,
    load-balancing requires that the difference in assigned tasks between
    any two GPUs is 1.
  */
-inline std::vector<size_t> solve_ap_swap2(double *costp, const Mat2D<double> &w,
-                                    Mat2D<double> &d) {
+inline std::vector<size_t> solve_ap_swap2(double *costp, const solve::Mat2D<int64_t> &w,
+                                    solve::Mat2D<double> &d) {
 
   // w and d are square
   assert(d.shape().is_cube());
@@ -354,7 +81,7 @@ inline std::vector<size_t> solve_ap_swap2(double *costp, const Mat2D<double> &w,
   RollingStatistics stats;
 
   std::vector<size_t> bestF = f;
-  double bestCost = ap::detail::cost(w,d,f);
+  double bestCost = solve::cost(w,d,f);
   stats.insert(bestCost);
 
   bool changed = true;
@@ -367,7 +94,7 @@ inline std::vector<size_t> solve_ap_swap2(double *costp, const Mat2D<double> &w,
         std::vector<size_t> swappedF = f; // swapped f
         std::swap(swappedF[i], swappedF[j]);
 
-        double swappedCost = detail::cost(w,d,swappedF);
+        double swappedCost = solve::cost(w,d,swappedF);
         stats.insert(swappedCost);
 
         if (swappedCost < bestCost) {
@@ -514,7 +241,7 @@ protected:
 
   /* return the distance matrix between the processors in `procs`
    */
-  ap::Mat2D<double> get_gpu_distance_matrix(
+  solve::Mat2D<double> get_gpu_distance_matrix(
       const std::vector<std::pair<Processor, Memory>> &gpus);
 };
 
@@ -600,7 +327,7 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
   }
 
 
-  ap::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
+  solve::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
 
   printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
   for (size_t i = 0; i < distance.shape()[1]; ++i) {
@@ -614,7 +341,7 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
   /* Compute the point task domain overlap for all pairs of point tasks.
   This is the weight matrix in our assignment problem.
   */
-  ap::Mat2D<double> weight(input.domain.get_volume(), input.domain.get_volume(),
+  solve::Mat2D<int64_t> weight(input.domain.get_volume(), input.domain.get_volume(),
                            0);
 
   assert(input.domain.dim == 2 && "TODO: only implemented for dim=2");
@@ -672,14 +399,14 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
   for (size_t i = 0; i < weight.shape()[1]; ++i) {
     printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
     for (size_t j = 0; j < weight.shape()[0]; ++j) {
-      printf(" %.2e", weight.at(i, j));
+      printf(" %6ld", weight.at(i, j));
     }
     printf("\n");
   }
 
   nvtxRangePush("solve_ap");
   double cost;
-  std::vector<size_t> f = ap::solve_ap(&cost, weight, distance);
+  std::vector<size_t> f = solve::ap_brute_force(&cost, weight, distance);
   assert(f.size() == weight.shape()[0]);
   nvtxRangePop();
 
@@ -1072,7 +799,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
 
   /* build the distance matrix */
   nvtxRangePush("distance matrix");
-  ap::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
+  solve::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
   nvtxRangePop(); // distance matrix
 
   printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
@@ -1085,7 +812,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   }
 
   /* build the flow matrix */
-  ap::Mat2D<double> weight(overlap.size(), overlap.size(), 0);
+  solve::Mat2D<int64_t> weight(overlap.size(), overlap.size(), 0);
   {
     size_t i = 0;
     for (auto &src : overlap) {
@@ -1102,17 +829,18 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   for (size_t i = 0; i < weight.shape()[1]; ++i) {
     printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
     for (size_t j = 0; j < weight.shape()[0]; ++j) {
-      printf(" %6f", weight.at(i, j));
+      printf(" %6ld", weight.at(i, j));
     }
     printf("\n");
   }
 
   // TODO: for a must-epoch task, we should never have more tasks than agents,
   // so solve_ap only needs to work for distance >= weight
+  // TODO this should be QAP
   nvtxRangePush("solve_ap");
   double cost;
   std::vector<size_t> assignment =
-      ap::solve_ap(&cost, weight, distance);
+      solve::ap_brute_force(&cost, weight, distance);
   nvtxRangePop(); // solve_ap
   if (assignment.empty()) {
     std::cerr << "couldn't find an assignment\n";
@@ -1347,7 +1075,7 @@ NodeAwareMustEpochMapper::get_gpu_fbs() {
   return gpus;
 }
 
-ap::Mat2D<double> NodeAwareMustEpochMapper::get_gpu_distance_matrix(
+solve::Mat2D<double> NodeAwareMustEpochMapper::get_gpu_distance_matrix(
     const std::vector<std::pair<Processor, Memory>> &gpus) {
 
   printf("NodeAwareMustEpochMapper::%s(): GPU memory-memory affinities\n",
@@ -1359,7 +1087,7 @@ ap::Mat2D<double> NodeAwareMustEpochMapper::get_gpu_distance_matrix(
                       << aff.latency;
   }
 
-  ap::Mat2D<double> ret(gpus.size(), gpus.size(), 0);
+  solve::Mat2D<double> ret(gpus.size(), gpus.size(), 0);
   size_t i = 0;
   for (auto &src : gpus) {
     size_t j = 0;

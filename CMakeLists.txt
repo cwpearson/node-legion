@@ -12,6 +12,10 @@ if(Legion_ENABLE_TESTING)
   add_test(NAME hello_world COMMAND ${Legion_TEST_LAUNCHER} $<TARGET_FILE:hello_world> ${Legion_TEST_ARGS})
 endif()
 
+set(SOLVE_SRCS
+  solve.cpp
+)
+
 add_executable(multiple tut_multiple.cpp)
 target_link_libraries(multiple Legion::Legion)
 
@@ -27,17 +31,19 @@ target_link_libraries(0-hello-world Legion::Legion)
 add_executable(1-multiple 1_multiple.cu)
 target_link_libraries(1-multiple Legion::Legion)
 
-add_executable(2-ghost-gpu 2_ghost_gpu.cu)
+add_executable(2-ghost-gpu 2_ghost_gpu.cu ${SOLVE_SRCS})
 target_link_libraries(2-ghost-gpu Legion::Legion)
 target_link_libraries(2-ghost-gpu nvToolsExt)
 
 add_executable(print-machine print_machine.cpp)
 target_link_libraries(print-machine Legion::Legion)
 
-add_executable(3-stencil-indexspace 3_stencil_indexspace.cu)
+add_executable(3-stencil-indexspace 3_stencil_indexspace.cu ${SOLVE_SRCS})
 target_link_libraries(3-stencil-indexspace Legion::Legion)
 target_link_libraries(3-stencil-indexspace nvToolsExt)
 
-add_executable(4-stencil 4_stencil.cu)
+add_executable(4-stencil 4_stencil.cu ${SOLVE_SRCS})
 target_link_libraries(4-stencil Legion::Legion)
 target_link_libraries(4-stencil nvToolsExt)
+
+add_executable(bench-solve bench_solve.cpp ${SOLVE_SRCS})
