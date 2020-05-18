@@ -164,6 +164,26 @@ double cost(const Mat2D<int64_t> &w,      // weight
 );
 
 
+/* greedy swap solution to assignment problem
+
+   an `n` x `n` matrix `w` describing inter-task communication volumes.
+   a `p` x `p` matrix `d` describing inter-agent communication distances.
+   objective, minimize total flow * distance between agents, where the flow is
+   the sum communication for each task
+
+   return empty vector if no valid assignment was found
+
+   load-balancing requires that the difference in assigned tasks between
+   any two GPUs is 1.
+
+   We iterate until the cost function cannot be improved
+   each iteration, we check all possible assignment swaps and pick the first that improves
+   the cost
+ */
+std::vector<size_t> ap_swap2(double *costp, const Mat2D<int64_t> &w,
+                             const Mat2D<double> &d);
+
+
 }
 
 

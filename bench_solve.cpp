@@ -39,10 +39,9 @@ solve::Mat2D<double> make_block_diagonal_matrix(const size_t bs, const size_t n,
 
 /* `nx` * `ny` tasks, comm for stencil `order`
  */
-std::vector<int64_t> make_stencil_weight_matrix(int64_t nx, int64_t ny,
-                                                int64_t bsx, int64_t bsy,
-                                                int64_t order) {
-  std::vector<int64_t> ret(nx * ny * nx * ny);
+solve::Mat2D<int64_t> make_stencil_weight_matrix(int64_t nx, int64_t ny, int64_t bsx,
+                                          int64_t bsy, int64_t order) {
+  solve::Mat2D<int64_t> ret(nx * ny, nx * ny);
 
   for (int i = 0; i < ny; ++i) {
     for (int j = 0; j < nx; ++j) {
@@ -50,42 +49,42 @@ std::vector<int64_t> make_stencil_weight_matrix(int64_t nx, int64_t ny,
       // -y nbr
       if (i > 0) {
         int64_t dstI = (i - 1) * nx + j;
-        ret[srcI * ny * nx + dstI] = bsx * order;
+        ret.at(srcI, dstI) = bsx * order;
       }
       // +y nbr
       if (i + 1 < ny) {
         int64_t dstI = (i + 1) * nx + j;
-        ret[srcI * ny * nx + dstI] = bsx * order;
+        ret.at(srcI, dstI) = bsx * order;
       }
       // -x nbr
       if (j > 0) {
         int64_t dstI = (i)*nx + (j - 1);
-        ret[srcI * ny * nx + dstI] = bsy * order;
+        ret.at(srcI, dstI) = bsy * order;
       }
       // +x nbr
       if (j + 1 < nx) {
         int64_t dstI = (i)*nx + (j + 1);
-        ret[srcI * ny * nx + dstI] = bsy * order;
+        ret.at(srcI, dstI) = bsy * order;
       }
       // -x/-y nrb
       if (i > 0 && j > 0) {
         int64_t dstI = (i - 1) * nx + (j - 1);
-        ret[srcI * ny * nx + dstI] = order * order;
+        ret.at(srcI, dstI) = order * order;
       }
       // -x/+y nrb
       if (i + 1 < ny && j > 0) {
         int64_t dstI = (i + 1) * nx + (j - 1);
-        ret[srcI * ny * nx + dstI] = order * order;
+        ret.at(srcI, dstI) = order * order;
       }
       // +x/-y nrb
       if (i > 0 && j + 1 < nx) {
         int64_t dstI = (i - 1) * nx + (j + 1);
-        ret[srcI * ny * nx + dstI] = order * order;
+        ret.at(srcI, dstI) = order * order;
       }
       // +x/+y nrb
       if (i + 1 < ny && j + 1 < nx) {
         int64_t dstI = (i + 1) * nx + (j + 1);
-        ret[srcI * ny * nx + dstI] = order * order;
+        ret.at(srcI, dstI) = order * order;
       }
     }
   }
@@ -165,23 +164,54 @@ struct Bencher {
 int main(void) {
 
   int64_t nAgents = 4;
-  int64_t nTasks = 7;
+  int64_t nTasks = 15;
 
   solve::Mat2D<double> d =
       make_block_diagonal_matrix((nAgents + 1) / 2, nAgents, 0.5, 1);
   solve::Mat2D<int64_t> w = make_random_symmetric_matrix(nTasks);
 
+  int64_t nx = 5;
+  int64_t ny = 3;
+  assert(nx * ny == nAgents);
+  w = make_stencil_weight_matrix(nx, ny, 10, 10, 2);
+
+
+  for (size_t i = 0; i < nTasks; ++i){
+      for (size_t j = 0; j < nTasks; ++j){
+      std::cerr << w.at(i,j) << " ";
+  }
+  std::cerr << "\n";
+  }
+
   double cost;
   std::vector<size_t> f;
   Bencher b(2.0);
-  b.go([&]() { f = solve::ap_brute_force(&cost, w, d); });
 
-  std::cerr << "f: ";
+  /* try the swap2 */
+  b.go([&]() { f = solve::ap_swap2(&cost, w, d); });
+
+  std::cerr << "cost=" << cost << " f: ";
   for (auto &e : f) {
     std::cerr << e << " ";
   }
   std::cerr << "\n";
 
-  std::cerr << "("<<b.stopReason << ") " << b.count << " runs " << std::scientific <<  b.avg.count()
-            << "+-" << b.stddev() << "\n";
+  std::cerr << "(" << b.stopReason << ") " << b.count << " runs "
+            << std::scientific << b.avg.count() << "+-" << b.stddev()
+            << std::defaultfloat << "\n";
+
+
+  b.go([&]() { f = solve::ap_brute_force(&cost, w, d); });
+
+  std::cerr << "cost=" << cost << " f: ";
+  for (auto &e : f) {
+    std::cerr << e << " ";
+  }
+  std::cerr << "\n";
+
+  std::cerr << "(" << b.stopReason << ") " << b.count << " runs "
+            << std::scientific << b.avg.count() << "+-" << b.stddev()
+            << std::defaultfloat << "\n";
+
+
 }

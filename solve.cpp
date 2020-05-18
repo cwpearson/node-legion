@@ -188,10 +188,13 @@ std::vector<size_t> ap_brute_force(double *costp, const Mat2D<int64_t> &w,
   return ap_brute_force<double>(costp, solve::cost, w, d);
 }
 
-#if 0
-std::vector<size_t> ap_brute_force(double *costp, const Mat2D<int64_t> &w,
-                                   const Mat2D<double> &d) {
-
+template <typename C>
+std::vector<size_t>
+ap_swap2(C *costp,
+         std::function<C(const Mat2D<int64_t> &w, const Mat2D<double> &d,
+                         const std::vector<size_t> &f)>
+             costFunc,
+         const Mat2D<int64_t> &w, const Mat2D<double> &d) {
   // w and d are square
   assert(d.shape().is_cube());
   assert(w.shape().is_cube());
@@ -214,54 +217,53 @@ std::vector<size_t> ap_brute_force(double *costp, const Mat2D<int64_t> &w,
     return true;
   };
 
-  auto next_f = [&]() -> bool {
-    // if f == [numAgents-1, numAgents-1, ...]
-    if (std::all_of(f.begin(), f.end(), [&](size_t u) {
-          return u == (numAgents > 0 ? numAgents - 1 : 0);
-        })) {
-      return false;
-    }
+  // initial round-robin assignment
+  for (size_t i = 0; i < numTasks; ++i) {
+    f[i] = i % numAgents;
+  }
+  assert(is_lb_okay()); // initial load balance should be good
+  C bestCost = costFunc(w, d, f);
 
-    bool carry;
-    int64_t i = 0;
-    do {
-      carry = false;
-      ++f[i];
-      if (f[i] >= numAgents) {
-        f[i] = 0;
-        ++i;
-        carry = true;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+
+    // check the cost of all possible swaps
+    for (size_t i = 0; i < numTasks; ++i) {
+      for (size_t j = i + 1; j < numTasks; ++j) {
+        std::vector<size_t> swappedF = f; // swapped f
+        std::swap(swappedF[i], swappedF[j]);
+
+        double swappedCost = costFunc(w, d, swappedF);
+        stats.insert(swappedCost);
+
+        if (swappedCost < bestCost) {
+          bestCost = swappedCost;
+          f = swappedF;
+          changed = true;
+          goto body_end; // fast exit
+        }
       }
-    } while (true == carry);
-    return true;
-  };
-
-  std::vector<size_t> bestF;
-  double bestCost = std::numeric_limits<double>::infinity();
-  do {
-    // only compute cost if load-balancing is okay
-    if (!is_lb_okay()) {
-      continue;
     }
-
-    const double c = cost(w, d, f);
-    stats.insert(c);
-    if (bestCost > c) {
-      bestF = f;
-      bestCost = c;
-    }
-  } while (next_f());
+  body_end:;
+  }
 
   if (costp) {
     *costp = bestCost;
   }
 
+#if 0
   std::cerr << "Considered " << stats.count()
             << " placements: min=" << stats.min() << " avg=" << stats.mean()
             << " max=" << stats.max() << "\n";
-
-  return bestF;
-}
 #endif
+
+  return f;
+}
+
+std::vector<size_t> ap_swap2(double *costp, const Mat2D<int64_t> &w,
+                             const Mat2D<double> &d) {
+  return ap_swap2<double>(costp, solve::cost, w, d);
+}
 
 } // namespace solve
