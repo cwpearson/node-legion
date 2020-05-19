@@ -1,11 +1,12 @@
 #pragma once
 
-#include <vector>
-#include <limits>
-#include <cstdint>
 #include <cassert>
+#include <cstdint>
 #include <cstring>
+#include <functional>
 #include <iostream>
+#include <limits>
+#include <vector>
 
 namespace solve {
 
@@ -85,10 +86,11 @@ public:
 
   inline T &at(int64_t i, int64_t j) noexcept {
     if (i >= rect_[1]) {
-        std::cerr << ".at(" << i << ", ...) in matrix" << rect_[0] << "x" << rect_[1] << "\n";
-        assert(i < rect_[1]);
+      std::cerr << ".at(" << i << ", ...) in matrix" << rect_[0] << "x"
+                << rect_[1] << "\n";
+      assert(i < rect_[1]);
     }
-    
+
     assert(j < rect_[0]);
     return data_[i * rect_[0] + j];
   }
@@ -137,6 +139,9 @@ public:
   }
 };
 
+typedef std::function<double(const Mat2D<int64_t> &w, const Mat2D<double> &d,
+                             const std::vector<size_t> &f)>
+    CostFunction;
 
 /* brute-force solution to assignment problem
 
@@ -150,19 +155,32 @@ public:
    load-balancing requires that the difference in assigned tasks between
    any two GPUs is 1.
  */
-std::vector<size_t> ap_brute_force(double *costp, const Mat2D<int64_t> &w,
-                             const Mat2D<double> &d);
+std::vector<size_t> ap_max_brute_force(double *costp, const Mat2D<int64_t> &w,
+                                   const Mat2D<double> &d);
+std::vector<size_t> ap_sum_brute_force(double *costp, const Mat2D<int64_t> &w,
+                                   const Mat2D<double> &d);
 
-
-
-/* cost of assigning task i to agent f[i], where `w` describes the inter-task communication
-and `d` the inter-agent distance
+/* if costs is not null, save max and sum costs in [0] and [1]
 */
-double cost(const Mat2D<int64_t> &w,      // weight
-                   const Mat2D<double> &d,      // distance
-                   const std::vector<size_t> &f // agent for each task
+std::vector<size_t> ap_brute_force(std::array<double, 2> *costs, const Mat2D<int64_t> &w,
+                                   const Mat2D<double> &d);
+
+
+/* cost of assigning task i to agent f[i], where `w` describes the inter-task
+communication and `d` the inter-agent distance
+*/
+double sum_cost(const Mat2D<int64_t> &w,     // weight
+                const Mat2D<double> &d,      // distance
+                const std::vector<size_t> &f // agent for each task
 );
 
+/* cost of assigning task i to agent f[i], where `w` describes the inter-task
+communication and `d` the inter-agent distance
+*/
+double max_cost(const Mat2D<int64_t> &w,     // weight
+                const Mat2D<double> &d,      // distance
+                const std::vector<size_t> &f // agent for each task
+);
 
 /* greedy swap solution to assignment problem
 
@@ -177,16 +195,17 @@ double cost(const Mat2D<int64_t> &w,      // weight
    any two GPUs is 1.
 
    We iterate until the cost function cannot be improved
-   each iteration, we check all possible assignment swaps and pick the first that improves
-   the cost
+   each iteration, we check all possible assignment swaps and pick the first
+   that improves the cost
  */
-std::vector<size_t> ap_swap2(double *costp, const Mat2D<int64_t> &w,
+std::vector<size_t> ap_max_swap2(double *costp, const Mat2D<int64_t> &w,
+                             const Mat2D<double> &d);
+std::vector<size_t> ap_sum_swap2(double *costp, const Mat2D<int64_t> &w,
+                             const Mat2D<double> &d);
+std::vector<size_t> ap_swap2(std::array<double, 2> *costs, const Mat2D<int64_t> &w,
                              const Mat2D<double> &d);
 
-
-}
-
-
+} // namespace solve
 
 struct RollingStatistics {
   RollingStatistics() { reset(); }

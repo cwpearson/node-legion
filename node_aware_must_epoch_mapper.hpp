@@ -32,9 +32,9 @@ inline std::vector<size_t> solve_qap(double *costp, const solve::Mat2D<int64_t> 
   }
 
   std::vector<size_t> bestF = f;
-  double bestCost = solve::cost(w, d, f);
+  double bestCost = solve::sum_cost(w, d, f);
   do {
-    const double cost = solve::cost(w, d, f);
+    const double cost = solve::sum_cost(w, d, f);
     if (bestCost > cost) {
       bestF = f;
       bestCost = cost;
@@ -81,7 +81,7 @@ inline std::vector<size_t> solve_ap_swap2(double *costp, const solve::Mat2D<int6
   RollingStatistics stats;
 
   std::vector<size_t> bestF = f;
-  double bestCost = solve::cost(w,d,f);
+  double bestCost = solve::max_cost(w,d,f);
   stats.insert(bestCost);
 
   bool changed = true;
@@ -94,7 +94,7 @@ inline std::vector<size_t> solve_ap_swap2(double *costp, const solve::Mat2D<int6
         std::vector<size_t> swappedF = f; // swapped f
         std::swap(swappedF[i], swappedF[j]);
 
-        double swappedCost = solve::cost(w,d,swappedF);
+        double swappedCost = solve::max_cost(w,d,swappedF);
         stats.insert(swappedCost);
 
         if (swappedCost < bestCost) {
@@ -406,7 +406,7 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
 
   nvtxRangePush("solve_ap");
   double cost;
-  std::vector<size_t> f = solve::ap_brute_force(&cost, weight, distance);
+  std::vector<size_t> f = solve::ap_sum_brute_force(&cost, weight, distance);
   assert(f.size() == weight.shape()[0]);
   nvtxRangePop();
 
@@ -840,7 +840,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   nvtxRangePush("solve_ap");
   double cost;
   std::vector<size_t> assignment =
-      solve::ap_brute_force(&cost, weight, distance);
+      solve::ap_sum_brute_force(&cost, weight, distance);
   nvtxRangePop(); // solve_ap
   if (assignment.empty()) {
     std::cerr << "couldn't find an assignment\n";

@@ -39,8 +39,9 @@ solve::Mat2D<double> make_block_diagonal_matrix(const size_t bs, const size_t n,
 
 /* `nx` * `ny` tasks, comm for stencil `order`
  */
-solve::Mat2D<int64_t> make_stencil_weight_matrix(int64_t nx, int64_t ny, int64_t bsx,
-                                          int64_t bsy, int64_t order) {
+solve::Mat2D<int64_t> make_stencil_weight_matrix(int64_t nx, int64_t ny,
+                                                 int64_t bsx, int64_t bsy,
+                                                 int64_t order) {
   solve::Mat2D<int64_t> ret(nx * ny, nx * ny);
 
   for (int i = 0; i < ny; ++i) {
@@ -164,33 +165,64 @@ struct Bencher {
 int main(void) {
 
   int64_t nAgents = 4;
-  int64_t nTasks = 15;
+  int64_t nTasks = 16;
 
   solve::Mat2D<double> d =
       make_block_diagonal_matrix((nAgents + 1) / 2, nAgents, 0.5, 1);
   solve::Mat2D<int64_t> w = make_random_symmetric_matrix(nTasks);
 
-  int64_t nx = 5;
-  int64_t ny = 3;
-  assert(nx * ny == nAgents);
+  int64_t nx = 4;
+  int64_t ny = 4;
+  assert(nx * ny == nTasks);
+  if (nx * ny != nTasks) {
+    std::cerr << "config error\n";
+    exit(EXIT_FAILURE);
+  }
   w = make_stencil_weight_matrix(nx, ny, 10, 10, 2);
 
-
-  for (size_t i = 0; i < nTasks; ++i){
-      for (size_t j = 0; j < nTasks; ++j){
-      std::cerr << w.at(i,j) << " ";
-  }
-  std::cerr << "\n";
+  for (size_t i = 0; i < nTasks; ++i) {
+    for (size_t j = 0; j < nTasks; ++j) {
+      std::cerr << w.at(i, j) << " ";
+    }
+    std::cerr << "\n";
   }
 
   double cost;
   std::vector<size_t> f;
   Bencher b(2.0);
 
-  /* try the swap2 */
-  b.go([&]() { f = solve::ap_swap2(&cost, w, d); });
+  {
+    b.go([&]() { f = solve::ap_max_swap2(&cost, w, d); });
 
-  std::cerr << "cost=" << cost << " f: ";
+    std::cerr << "ap_max_swap2 cost=" << cost << " f: ";
+    for (auto &e : f) {
+      std::cerr << e << " ";
+    }
+    std::cerr << "\n";
+
+    std::cerr << "(" << b.stopReason << ") " << b.count << " runs "
+              << std::scientific << b.avg.count() << "+-" << b.stddev()
+              << std::defaultfloat << "\n";
+  }
+
+  {
+    b.go([&]() { f = solve::ap_sum_swap2(&cost, w, d); });
+
+    std::cerr << "ap_sum_swap2 cost=" << cost << " f: ";
+    for (auto &e : f) {
+      std::cerr << e << " ";
+    }
+    std::cerr << "\n";
+
+    std::cerr << "(" << b.stopReason << ") " << b.count << " runs "
+              << std::scientific << b.avg.count() << "+-" << b.stddev()
+              << std::defaultfloat << "\n";
+  }
+
+{
+  std::array<double, 2> costs;
+  b.go([&]() { f = solve::ap_swap2(&costs, w, d); });
+  std::cerr << "ap_swap2 cost=" << costs[0] << " " << costs[1] << " f: ";
   for (auto &e : f) {
     std::cerr << e << " ";
   }
@@ -199,11 +231,11 @@ int main(void) {
   std::cerr << "(" << b.stopReason << ") " << b.count << " runs "
             << std::scientific << b.avg.count() << "+-" << b.stddev()
             << std::defaultfloat << "\n";
+}
 
-
-  b.go([&]() { f = solve::ap_brute_force(&cost, w, d); });
-
-  std::cerr << "cost=" << cost << " f: ";
+{
+  b.go([&]() { f = solve::ap_sum_brute_force(&cost, w, d); });
+  std::cerr << "ap_sum_brute_force cost=" << cost << " f: ";
   for (auto &e : f) {
     std::cerr << e << " ";
   }
@@ -212,6 +244,32 @@ int main(void) {
   std::cerr << "(" << b.stopReason << ") " << b.count << " runs "
             << std::scientific << b.avg.count() << "+-" << b.stddev()
             << std::defaultfloat << "\n";
+}
 
+{
+  b.go([&]() { f = solve::ap_max_brute_force(&cost, w, d); });
+  std::cerr << "ap_max_brute_force cost=" << cost << " f: ";
+  for (auto &e : f) {
+    std::cerr << e << " ";
+  }
+  std::cerr << "\n";
 
+  std::cerr << "(" << b.stopReason << ") " << b.count << " runs "
+            << std::scientific << b.avg.count() << "+-" << b.stddev()
+            << std::defaultfloat << "\n";
+}
+
+{
+  std::array<double, 2> costs;
+  b.go([&]() { f = solve::ap_brute_force(&costs, w, d); });
+  std::cerr << "ap_brute_force cost=" << costs[0] << " " << costs[1] << " f: ";
+  for (auto &e : f) {
+    std::cerr << e << " ";
+  }
+  std::cerr << "\n";
+
+  std::cerr << "(" << b.stopReason << ") " << b.count << " runs "
+            << std::scientific << b.avg.count() << "+-" << b.stddev()
+            << std::defaultfloat << "\n";
+}
 }
