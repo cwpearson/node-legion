@@ -40,8 +40,8 @@ enum {
 /* stencil iterations alternate 0->1 and 1->0
  */
 enum {
-  FID_IN,
-  FID_OUT,
+  FID_0,
+  FID_1,
 };
 
 enum {
@@ -295,8 +295,8 @@ void top_level_task(const Task *task,
   FieldSpace fs = runtime->create_field_space(ctx);
   {
     FieldAllocator allocator = runtime->create_field_allocator(ctx, fs);
-    allocator.allocate_field(sizeof(DTYPE), FID_IN);
-    allocator.allocate_field(sizeof(DTYPE), FID_OUT);
+    allocator.allocate_field(sizeof(DTYPE), FID_0);
+    allocator.allocate_field(sizeof(DTYPE), FID_1);
   }
 
   // compute domain logical region
@@ -378,6 +378,10 @@ void top_level_task(const Task *task,
   LogicalPartition disjointPartition =
       runtime->get_logical_partition(ctx, lr, disjointIp);
 
+  // record input and output fields
+  int inputField = FID_0;
+  int outputField = FID_1;
+
   {
     IndexTaskLauncher init_launcher(INIT_TASK_ID, launchSpace,
                                     TaskArgument(NULL, 0), ArgumentMap());
@@ -385,7 +389,7 @@ void top_level_task(const Task *task,
     {
       RegionRequirement req(disjointPartition, 0 /*identity projection?*/,
                             WRITE_DISCARD, EXCLUSIVE, lr);
-      req.add_field(FID_OUT);
+      req.add_field(outputField);
       init_launcher.add_region_requirement(req);
     }
 
@@ -399,20 +403,10 @@ void top_level_task(const Task *task,
 
     std::map<Point<2>, Future> futs;
 
-    // copy FID_OUT to FID_IN
-    {
-      RegionRequirement dst(lr, WRITE_DISCARD, EXCLUSIVE, lr);
-      dst.add_field(FID_IN);
-      RegionRequirement src(lr, READ_ONLY, EXCLUSIVE, lr);
-      src.add_field(FID_OUT);
-      CopyLauncher launcher;
-      launcher.add_copy_requirements(src, dst);
-      std::cerr << "issue copy\n";
-      runtime->issue_copy_operation(ctx, launcher);
-    }
+    // swap input field and output field
+    std::swap(inputField, outputField);
 
     // launch stencil tasks
-
     {
       IndexTaskLauncher stencil_launcher(STENCIL_TASK_ID, launchSpace,
                                          TaskArgument(NULL, 0), ArgumentMap());
@@ -421,7 +415,7 @@ void top_level_task(const Task *task,
       {
         RegionRequirement req(tilePartition, 0 /* identity projection?*/,
                               READ_ONLY, SIMULTANEOUS, lr);
-        req.add_field(FID_IN);
+        req.add_field(inputField);
         stencil_launcher.add_region_requirement(req);
       }
 
@@ -429,7 +423,7 @@ void top_level_task(const Task *task,
       {
         RegionRequirement req(disjointPartition, 0 /*identity projection?*/,
                               WRITE_DISCARD, EXCLUSIVE, lr);
-        req.add_field(FID_OUT);
+        req.add_field(outputField);
         stencil_launcher.add_region_requirement(req);
       }
 
@@ -446,7 +440,7 @@ void top_level_task(const Task *task,
       {
         RegionRequirement req(disjointPartition, 0 /*identity projection?*/,
                               READ_ONLY, EXCLUSIVE, lr);
-        req.add_field(FID_OUT);
+        req.add_field(outputField);
         check_launcher.add_region_requirement(req);
       }
 
