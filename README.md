@@ -223,3 +223,12 @@ Use region interference as a proxy for required data exchange between tasks
 * Mert's hierarchical methods? Or sinogram/tomogram data placement
 * Block Sparse matrix operations?
 
+
+
+## Task placement
+
+* Do a good partition and then solve quadratic assignment problem
+* or, overdecompose and then solve general assignment problem
+  * Greedy approaches for a class of nonlinear Generalized Assignment Problems (Sharkey and Romeijn)
+  * Maybe use dlib
+
