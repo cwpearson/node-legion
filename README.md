@@ -62,6 +62,7 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
   * log level `0` is everything, `5` is errors only
     * `-level gpu=2`: to see some logging about GPU distances
     * `-level node_aware_must_epoch_mapper=1` to see some debug messages from the Mapper
+    * `-level nvml=0,realm/linux=0,system,topology=0`: to see info about system topology
 
 
 
