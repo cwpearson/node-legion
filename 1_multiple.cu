@@ -5,7 +5,7 @@
 #include <cstdlib>
 #include "legion.h"
 
-#include "node_aware_mapper.hpp"
+#include "node_aware_mapper2.hpp"
 
 using namespace Legion;
 

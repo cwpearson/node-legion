@@ -10,7 +10,7 @@
 // use the Node Aware Must Epoch Mapper
 #define USE_NAMEM 1
 
-#include "node_aware_must_epoch_mapper.hpp"
+#include "node_aware_mapper.hpp"
 
 // be noisy
 // #define DEBUG_STENCIL_CALC

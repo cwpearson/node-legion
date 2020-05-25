@@ -1,249 +1,9 @@
-#pragma once
-
-// based off of https://legion.stanford.edu/tutorial/custom_mappers.html
-
-#include "legion.h"
-
-#include <cassert>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-
-#include "default_mapper.h"
-
-#include <nvToolsExt.h>
-
-#include "solve.hpp"
-
-/* assignment problem utilities */
-namespace ap {
-
-/* brute-force solution to QAP, placing the final cost in costp if not null
- */
-inline std::vector<size_t> solve_qap(double *costp, const solve::Mat2D<int64_t> &w,
-                                     solve::Mat2D<double> &d) {
-
-  assert(w.shape() == d.shape());
-  assert(w.shape()[0] == d.shape()[1]);
-
-  std::vector<size_t> f(w.shape()[0]);
-  for (size_t i = 0; i < w.shape()[0]; ++i) {
-    f[i] = i;
-  }
-
-  std::vector<size_t> bestF = f;
-  double bestCost = solve::sum_cost(w, d, f);
-  do {
-    const double cost = solve::sum_cost(w, d, f);
-    if (bestCost > cost) {
-      bestF = f;
-      bestCost = cost;
-    }
-  } while (std::next_permutation(f.begin(), f.end()));
-
-  if (costp) {
-    *costp = bestCost;
-  }
-
-  return bestF;
-}
-
-/* greedy swap2 solution to assignment problem
-   Consider all 2-swaps of assignments, and choose the first better one found
-   Do this until no improvements can be found
-
-   objective: minimize total flow * distance product under assignment
-
-   `w`: flow between tasks
-   `d`: distance between agents
-
-   return empty vector if no valid assignment was found
-
-   load-balancing requires that the difference in assigned tasks between
-   any two GPUs is 1.
- */
-inline std::vector<size_t> solve_ap_swap2(double *costp, const solve::Mat2D<int64_t> &w,
-                                    solve::Mat2D<double> &d) {
-
-  // w and d are square
-  assert(d.shape().is_cube());
-  assert(w.shape().is_cube());
-
-  const int64_t numAgents = d.shape()[0];
-  const int64_t numTasks = w.shape()[0];
-
-  // round-robin assign tasks to agents
-  std::vector<size_t> f(numTasks, 0);
-  for (size_t t = 0; t < numTasks; ++t) {
-    f[t] = t % numAgents;
-  }
-
-  RollingStatistics stats;
-
-  std::vector<size_t> bestF = f;
-  double bestCost = solve::max_cost(w,d,f);
-  stats.insert(bestCost);
-
-  bool changed = true;
-  while(changed) {
-    changed = false;
-
-    // check all possible swaps
-    for (size_t i = 0; i < numTasks; ++i) {
-      for (size_t j = i + 1; j < numTasks; ++j) {
-        std::vector<size_t> swappedF = f; // swapped f
-        std::swap(swappedF[i], swappedF[j]);
-
-        double swappedCost = solve::max_cost(w,d,swappedF);
-        stats.insert(swappedCost);
-
-        if (swappedCost < bestCost) {
-          bestCost = swappedCost;
-          bestF = swappedF;
-          changed = true;
-          goto body_end; // fast exit
-        }
-      }
-    }
-
-    body_end:
-    ;
-  }
-
-  if (costp) {
-    *costp = bestCost;
-  }
-
-  std::cerr << "Considered " << stats.count()
-            << " placements: min=" << stats.min() << " avg=" << stats.mean()
-            << " max=" << stats.max() << "\n";
-
-  return bestF;
-}
-
-
-
-} // namespace ap
+#include "node_aware_mapper.hpp"
 
 using namespace Legion;
 using namespace Legion::Mapping;
 
-Logger log_mapper("node_aware_must_epoch_mapper");
-
-class NodeAwareMustEpochMapper : public DefaultMapper {
-
-private:
-  /* Get the overlap between region requirements in bytes
-   */
-  int64_t get_region_requirement_overlap(MapperContext ctx,
-                                         const RegionRequirement &rra,
-                                         const RegionRequirement &rrb);
-
-  /* Get the overlap between Logical Regions in bytes
-   */
-  int64_t get_logical_region_overlap(MapperContext ctx,
-                                     const LogicalRegion &lra,
-                                     const LogicalRegion &lrb);
-
-public:
-  NodeAwareMustEpochMapper(MapperRuntime *rt, Machine machine, Processor local,
-                           const char *mapper_name);
-
-  /*
-  If the task is an index task launch the runtime calls slice_task to divide the
-  index task into a set of slices that contain point tasks. One slice
-  corresponds to one target processor. Each slice identifies an index space, a
-  subregion of the original domain and a target processor. All of the point
-  tasks for the subregion will be mapped by the mapper for the target processor.
-
-  If slice.stealable is true the task can be stolen for load balancing. If
-  slice.recurse is true the mapper for the target processor will invoke
-  slice_task again with the slice as input. Here is sample code to create a
-  stealable slice:
-
-  ```
-  struct SliceTaskInput {
-    IndexSpace                             domain_is;
-    Domain                                 domain;
-  };
-
-  struct SliceTaskOutput {
-    std::vector<TaskSlice>                 slices;
-    bool                                   verify_correctness; // = false
-  };
-  ```
-
-  A stealable slice:
-  ```
-  TaskSlice slice;
-  slice.domain = slice_subregion;
-  slice.proc = targets[target_proc_index];
-  slice.recurse = false;
-  slice.stealable = true;
-  slices.push_back(slice);
-  ```
-
-  Typically, the idea is that groups of nearby tasks would have locality, so we
-  would group these point tasks into slices, each of which has a rect of point
-  tasks and then assign those groups to procs. At the end of the day, each of
-  those point tasks is still mapped individually.
-
-  Instead, we will treat each point task independently, and create slices of 1.
-  This allows us to figure out which point tasks communicate and which should be
-  on nearby GPUs.
-  */
-  virtual void slice_task(const MapperContext ctx, const Task &task,
-                          const SliceTaskInput &input, SliceTaskOutput &output);
-
-  /*
-  If a mapper has one or more tasks that are ready to execute it calls
-  select_tasks_to_map. This method can copy tasks to the map_tasks list to
-  indicate the task should be mapped by this mapper. The method can copy tasks
-  to the relocate_tasks list to indicate the task should be mapped by a mapper
-  for a different processor. If it does neither the task stays in the ready
-  list.
-  */
-  virtual void select_tasks_to_map(const MapperContext ctx,
-                                   const SelectMappingInput &input,
-                                   SelectMappingOutput &output);
-
-  virtual void map_task(const MapperContext ctx, const Task &task,
-                        const MapTaskInput &input, MapTaskOutput &output);
-
-  /* Do some node-aware must-epoch mapping
-
-  */
-  virtual void map_must_epoch(const MapperContext ctx,
-                              const MapMustEpochInput &input,
-                              MapMustEpochOutput &output);
-
-  /* NodeAwareMustEpochMapper requests the runtime calls this
-    when the task is finished
-  */
-  virtual void postmap_task(const MapperContext ctx, const Task &task,
-                            const PostMapInput &input, PostMapOutput &output);
-
-  /* Replace the default mapper with a NodeAwareMustEpochMapper
-
-  to be passed to Runtime::add_registration_callback
-   */
-  static void mapper_registration(Machine machine, Runtime *rt,
-                                  const std::set<Processor> &local_procs);
-
-protected:
-  /* true if there is a GPU variant of the task
-   */
-  bool has_gpu_variant(const MapperContext ctx, TaskID id);
-
-  /* return GPUs pair with their closest FBs
-   */
-  std::vector<std::pair<Processor, Memory>> get_gpu_fbs();
-
-  /* return the distance matrix between the processors in `procs`
-   */
-  solve::Mat2D<double> get_gpu_distance_matrix(
-      const std::vector<std::pair<Processor, Memory>> &gpus);
-};
+Logger log("node_aware_mapper");
 
 NodeAwareMustEpochMapper::NodeAwareMustEpochMapper(MapperRuntime *rt,
                                                    Machine machine,
@@ -265,23 +25,69 @@ void NodeAwareMustEpochMapper::mapper_registration(
   printf("NodeAwareMustEpochMapper::%s(): [exit]\n", __FUNCTION__);
 }
 
-// inspired by DefaultMapper::have_proc_kind_variant
-bool NodeAwareMustEpochMapper::has_gpu_variant(const MapperContext ctx,
-                                               TaskID id) {
-  std::vector<VariantID> variants;
-  runtime->find_valid_variants(ctx, id, variants);
+/* generate a weight matrix from the slice
+ */
+template <unsigned DIM>
+void NodeAwareMustEpochMapper::index_task_create_weight_matrix(
+    solve::Mat2D<int64_t> &weight, MapperContext ctx, const Domain &inputDomain,
+    const Task &task) {
+  assert(inputDomain.dim == DIM);
 
-  for (unsigned i = 0; i < variants.size(); i++) {
-    const ExecutionConstraintSet exset =
-        runtime->find_execution_constraints(ctx, id, variants[i]);
-    if (exset.processor_constraint.can_use(Processor::TOC_PROC))
-      return true;
+  {
+    log.spew("point space numbering:");
+    int i = 0;
+    for (PointInDomainIterator<DIM> pir(inputDomain); pir(); ++pir, ++i) {
+      log.spew() << i << " p=" << *pir;
+      for (int r = 0; r < task.regions.size(); ++r) {
+        // is this a DomainPoint or a color
+        LogicalRegion li = runtime->get_logical_subregion_by_color(
+            ctx, task.regions[r].partition, DomainPoint(*pir));
+        log.spew() << "  " << r << " "
+                   << runtime->get_index_space_domain(ctx,
+                                                      li.get_index_space());
+      }
+    }
   }
-  return false;
+
+  int i = 0;
+  for (PointInDomainIterator<DIM> pi(inputDomain); pi(); ++pi, ++i) {
+    int j = 0;
+    for (PointInDomainIterator<DIM> pj(inputDomain); pj(); ++pj, ++j) {
+
+      int64_t bytes = 0;
+      for (int ri = 0; ri < task.regions.size(); ++ri) {
+        LogicalRegion li = runtime->get_logical_subregion_by_color(
+            ctx, task.regions[ri].partition, DomainPoint(*pi));
+
+        // TODO: is this sketchy
+        // create fake region requirements that move the partition to the
+        // region so we can reuse the region distance code
+        RegionRequirement rra = task.regions[ri];
+        rra.partition = LogicalPartition::NO_PART;
+        rra.region = li;
+        for (int rj = 0; rj < task.regions.size(); ++rj) {
+          LogicalRegion lj = runtime->get_logical_subregion_by_color(
+              ctx, task.regions[rj].partition, DomainPoint(*pj));
+
+          // TODO this feels sketchy
+          RegionRequirement rrb = task.regions[rj];
+          rrb.partition = LogicalPartition::NO_PART;
+          rrb.region = lj;
+
+          int64_t newBytes = get_region_requirement_overlap(ctx, rra, rrb);
+          // std::cerr << i << " " << j << " " << ri << " " << rj << " bytes="
+          // << newBytes << "\n";
+          bytes += newBytes;
+        }
+      }
+      // std::cerr << "slice " << *pi << " " << *pj << " bytes=" << bytes <<
+      // "\n";
+      weight.at(i, j) = bytes;
+    }
+  }
 }
 
 /*
-
 struct SliceTaskInput {
   IndexSpace                             domain_is;
   Domain                                 domain;
@@ -305,27 +111,24 @@ struct SliceTaskOutput {
   Instead of group
 
 */
-void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
-                                          const Task &task,
+void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
                                           const SliceTaskInput &input,
                                           SliceTaskOutput &output) {
-  log_mapper.spew("[entry] %s()", __FUNCTION__);
+  log.spew("[entry] %s()", __FUNCTION__);
 
-  log_mapper.spew() << __FUNCTION__
-                    << "(): input.domain_is = " << input.domain_is;
-  log_mapper.spew() << __FUNCTION__ << "(): input.domain    = " << input.domain;
+  log.spew() << __FUNCTION__ << "(): input.domain_is = " << input.domain_is;
+  log.spew() << __FUNCTION__ << "(): input.domain    = " << input.domain;
 
   /* Build the GPU distance matrix
    */
   std::vector<std::pair<Processor, Memory>> gpus = get_gpu_fbs();
   {
-    log_mapper.spew("GPU numbering:");
+    log.spew("GPU numbering:");
     int i = 0;
     for (auto p : gpus) {
-      log_mapper.spew() << i << " gpu=" << p.first << " fb=" << p.second;
+      log.spew() << i << " gpu=" << p.first << " fb=" << p.second;
     }
   }
-
 
   solve::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
 
@@ -341,58 +144,23 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
   /* Compute the point task domain overlap for all pairs of point tasks.
   This is the weight matrix in our assignment problem.
   */
-  solve::Mat2D<int64_t> weight(input.domain.get_volume(), input.domain.get_volume(),
-                           0);
+  solve::Mat2D<int64_t> weight(input.domain.get_volume(),
+                               input.domain.get_volume(), 0);
 
-  assert(input.domain.dim == 2 && "TODO: only implemented for dim=2");
+  // assert(input.domain.dim == 2 && "TODO: only implemented for dim=2");
 
-  {
-    log_mapper.spew("point space numbering:");
-    int i = 0;
-    for (PointInDomainIterator<2> pir(input.domain); pir(); ++pir, ++i) {
-      log_mapper.spew() << i << " p=" << *pir;
-      for (int r = 0; r < task.regions.size(); ++r) {
-        LogicalRegion li = runtime->get_logical_subregion_by_color(
-            ctx, task.regions[r].partition, *pir);
-        log_mapper.spew() << "  " << r << " " << runtime->get_index_space_domain(ctx, li.get_index_space());
-      }
-    }
-  }
-
-  int i = 0;
-  for (PointInDomainIterator<2> pi(input.domain); pi(); ++pi, ++i) {
-    int j = 0;
-    for (PointInDomainIterator<2> pj(input.domain); pj(); ++pj, ++j) {
-
-      int64_t bytes = 0;
-      for (int ri = 0; ri < task.regions.size(); ++ri) {
-        LogicalRegion li = runtime->get_logical_subregion_by_color(
-            ctx, task.regions[ri].partition, *pi);
-
-        // TODO: is this sketchy
-        // create fake region requirements that move the partition to the
-        // region so we can reuse the region distance code
-        RegionRequirement rra = task.regions[ri];
-        rra.partition = LogicalPartition::NO_PART;
-        rra.region = li;
-        for (int rj = 0; rj < task.regions.size(); ++rj) {
-          LogicalRegion lj = runtime->get_logical_subregion_by_color(
-              ctx, task.regions[rj].partition, *pj);
-
-          // TODO this feels sketchy
-          RegionRequirement rrb = task.regions[rj];
-          rrb.partition = LogicalPartition::NO_PART;
-          rrb.region = lj;
-
-          int64_t newBytes = get_region_requirement_overlap(ctx, rra, rrb);
-          // std::cerr << i << " " << j << " " << ri << " " << rj << " bytes="
-          // << newBytes << "\n";
-          bytes += newBytes;
-        }
-      }
-      // std::cerr << "slice " << *pi << " " << *pj << " bytes=" << bytes << "\n";
-      weight.at(i, j) = bytes;
-    }
+  switch (input.domain.dim) {
+  case 1:
+    index_task_create_weight_matrix<1>(weight, ctx, input.domain, task);
+    break;
+  case 2:
+    index_task_create_weight_matrix<2>(weight, ctx, input.domain, task);
+    break;
+  case 3:
+    index_task_create_weight_matrix<3>(weight, ctx, input.domain, task);
+    break;
+  default:
+    log.fatal() << "unhandled dimensionality in slice_task";
   }
 
   printf("NodeAwareMustEpochMapper::%s(): weight matrix\n", __FUNCTION__);
@@ -410,32 +178,68 @@ void NodeAwareMustEpochMapper::slice_task(const MapperContext ctx,
   assert(f.size() == weight.shape()[0]);
   nvtxRangePop();
 
-  log_mapper.spew() << "assignment";
+  log.spew() << "assignment";
   {
     std::stringstream ss;
     for (auto &e : f) {
       ss << e << " ";
     }
-    log_mapper.spew() << ss.str();
+    log.spew() << ss.str();
   }
 
   /* create the slices based on the assignments
+     TODO: template function?
    */
-  {
+  switch(input.domain.dim) {
+    case 2:  {
     size_t i = 0;
     for (PointInDomainIterator<2> pir(input.domain); pir(); ++pir, ++i) {
       TaskSlice slice;
       // slice subdomain is a single point
       slice.domain = Rect<2>(*pir, *pir);
       slice.proc = gpus[f[i]].first;
-      log_mapper.spew() << "assign slice domain " << slice.domain << " to proc "
-                        << slice.proc;
+      log.spew() << "assign slice domain " << slice.domain << " to proc "
+                 << slice.proc;
       slice.recurse = false;
       slice.stealable = true;
       output.slices.push_back(slice);
     }
+    break;
   }
-  log_mapper.spew("[exit] %s()", __FUNCTION__);
+    case 3:  {
+    size_t i = 0;
+    for (PointInDomainIterator<3> pir(input.domain); pir(); ++pir, ++i) {
+      TaskSlice slice;
+      // slice subdomain is a single point
+      slice.domain = Rect<3>(*pir, *pir);
+      slice.proc = gpus[f[i]].first;
+      log.spew() << "assign slice domain " << slice.domain << " to proc "
+                 << slice.proc;
+      slice.recurse = false;
+      slice.stealable = true;
+      output.slices.push_back(slice);
+    }
+    break;
+  }
+  }
+
+
+  log.spew("[exit] %s()", __FUNCTION__);
+}
+
+// inspired by DefaultMapper::have_proc_kind_variant
+bool NodeAwareMustEpochMapper::has_gpu_variant(const MapperContext ctx,
+                                               TaskID id) {
+  std::vector<VariantID> variants;
+  runtime->find_valid_variants(ctx, id, variants);
+
+  for (unsigned i = 0; i < variants.size(); i++) {
+    const ExecutionConstraintSet exset =
+        runtime->find_execution_constraints(ctx, id, variants[i]);
+    if (exset.processor_constraint.can_use(Processor::TOC_PROC))
+      return true;
+  }
+  return false;
 }
 
 /*
@@ -448,20 +252,20 @@ void NodeAwareMustEpochMapper::select_tasks_to_map(
     const MapperContext ctx, const SelectMappingInput &input,
     SelectMappingOutput &output) {
 
-  log_mapper.spew("[entry] %s()", __FUNCTION__);
+  log.spew("[entry] %s()", __FUNCTION__);
 
   for (const Task *task : input.ready_tasks) {
-    log_mapper.spew("task %u", task->task_id);
+    log.spew("task %u", task->task_id);
   }
 
   // just take all tasks
-  log_mapper.debug("%s(): selecting all %lu tasks", __FUNCTION__,
-                   input.ready_tasks.size());
+  log.debug("%s(): selecting all %lu tasks", __FUNCTION__,
+            input.ready_tasks.size());
   for (const Task *task : input.ready_tasks) {
     output.map_tasks.insert(task);
   }
 
-  log_mapper.spew("[exit] %s()", __FUNCTION__);
+  log.spew("[exit] %s()", __FUNCTION__);
 }
 
 void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
@@ -469,17 +273,17 @@ void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
                                         const MapTaskInput &input,
                                         MapTaskOutput &output) {
   nvtxRangePush("NodeAwareMustEpochMapper::map_task");
-  log_mapper.spew("[entry] map_task()");
+  log.spew("[entry] map_task()");
 
-  log_mapper.spew("%lu task.regions:", task.regions.size());
+  log.spew("%lu task.regions:", task.regions.size());
   for (auto &rr : task.regions) {
-    log_mapper.spew() << rr.region;
+    log.spew() << rr.region;
   }
 
   if (task.target_proc.kind() == Processor::TOC_PROC) {
 
-    log_mapper.spew("task %u (parent_task=%u)", task.task_id,
-                    task.parent_task->task_id);
+    log.spew("task %u (parent_task=%u)", task.task_id,
+             task.parent_task->task_id);
 
     /* some regions may already be mapped
      */
@@ -492,19 +296,19 @@ void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
     }
   }
 
-  log_mapper.spew("map_task() defer to DefaultMapper::map_task");
+  log.spew("map_task() defer to DefaultMapper::map_task");
   DefaultMapper::map_task(ctx, task, input, output);
 
   // get the runtime to call `postmap_task` when the task finishes running
   // TODO: causes a crash by itself
   output.postmap_task = false;
 
-  log_mapper.spew("target_procs.size()=%lu", output.target_procs.size());
+  log.spew("target_procs.size()=%lu", output.target_procs.size());
   for (auto &proc : output.target_procs) {
-    log_mapper.spew() << proc;
+    log.spew() << proc;
   }
 
-  log_mapper.spew("[exit] map_task()");
+  log.spew("[exit] map_task()");
   nvtxRangePop();
 }
 
@@ -512,18 +316,18 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
                                               const MapMustEpochInput &input,
                                               MapMustEpochOutput &output) {
   nvtxRangePush("NodeAwareMustEpochMapper::map_must_epoch");
-  log_mapper.debug("%s(): [entry]", __FUNCTION__);
+  log.debug("%s(): [entry]", __FUNCTION__);
 
   for (const auto &task : input.tasks) {
-    log_mapper.spew("task %u", task->task_id);
+    log.spew("task %u", task->task_id);
   }
 
   // ensure all tasks can run on GPU
   for (const auto &task : input.tasks) {
     bool ok = has_gpu_variant(ctx, task->task_id);
     if (!ok) {
-      log_mapper.error("NodeAwareMustEpochMapper error: a task without a "
-                       "TOC_PROC variant cannot be mapped.");
+      log.error("NodeAwareMustEpochMapper error: a task without a "
+                "TOC_PROC variant cannot be mapped.");
       assert(false);
     }
   }
@@ -558,8 +362,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     TaskGroup group = {task};
     groups.push_back(group);
   }
-  log_mapper.debug("%s(): %lu task groups after tasks", __FUNCTION__,
-                   groups.size());
+  log.debug("%s(): %lu task groups after tasks", __FUNCTION__, groups.size());
 
   // which logical region in each task must be mapped to the same physical
   // instance
@@ -575,8 +378,8 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     }
     groups.push_back(group);
   }
-  log_mapper.debug("%s(): %lu task groups after constraints", __FUNCTION__,
-                   groups.size());
+  log.debug("%s(): %lu task groups after constraints", __FUNCTION__,
+            groups.size());
 
   // iteratively merge any groups that have the same task
   bool changed = true;
@@ -603,8 +406,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     }
   }
 
-  log_mapper.debug("%s(): %lu task groups after merge", __FUNCTION__,
-                   groups.size());
+  log.debug("%s(): %lu task groups after merge", __FUNCTION__, groups.size());
   for (size_t gi = 0; gi < groups.size(); ++gi) {
   }
 
@@ -793,8 +595,8 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   /* print our GPU number
    */
   for (size_t i = 0; i < gpus.size(); ++i) {
-    log_mapper.debug() << "GPU index " << i << "proc:" << gpus[i].first
-                       << "/mem:" << gpus[i].second;
+    log.debug() << "GPU index " << i << "proc:" << gpus[i].first
+                << "/mem:" << gpus[i].second;
   }
 
   /* build the distance matrix */
@@ -881,8 +683,8 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
 
       const Task *task = constraint.constrained_tasks[idx];
       unsigned req_idx = constraint.requirement_indexes[idx];
-      log_mapper.debug("input constraint %u: task %u region %u", cid,
-                       task->task_id, req_idx);
+      log.debug("input constraint %u: task %u region %u", cid, task->task_id,
+                req_idx);
       needed_regions.insert(task->regions[req_idx].region);
       needed_fields.insert(task->regions[req_idx].privilege_fields.begin(),
                            task->regions[req_idx].privilege_fields.end());
@@ -913,12 +715,12 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
         inst, created, true /*acquire*/);
     assert(ok);
     if (!ok) {
-      log_mapper.error("Default mapper error. Unable to make instance(s) "
-                       "in memory " IDFMT " for index %d of constrained "
-                       "task %s (ID %lld) in must epoch launch.",
-                       mem.id, constraint.requirement_indexes[0],
-                       constraint.constrained_tasks[0]->get_task_name(),
-                       constraint.constrained_tasks[0]->get_unique_id());
+      log.error("Default mapper error. Unable to make instance(s) "
+                "in memory " IDFMT " for index %d of constrained "
+                "task %s (ID %lld) in must epoch launch.",
+                mem.id, constraint.requirement_indexes[0],
+                constraint.constrained_tasks[0]->get_task_name(),
+                constraint.constrained_tasks[0]->get_unique_id());
       assert(false);
     }
     constraint_mapping.push_back(inst);
@@ -951,7 +753,7 @@ void NodeAwareMustEpochMapper::postmap_task(const MapperContext ctx,
                                             const PostMapInput &input,
                                             PostMapOutput &output) {
 
-  log_mapper.debug() << "in NodeAwareMustEpochMapper::postmap_task";
+  log.debug() << "in NodeAwareMustEpochMapper::postmap_task";
 }
 
 // TODO: incomplete
@@ -1061,9 +863,9 @@ NodeAwareMustEpochMapper::get_gpu_fbs() {
       assert(kv.first == kv.second.p);
       assert(kv.first.kind() == Processor::TOC_PROC);
       assert(kv.second.m.kind() == Memory::GPU_FB_MEM);
-      log_mapper.spew() << "proc " << kv.first << ": closes mem=" << kv.second.m
-                        << " bw=" << kv.second.bandwidth
-                        << "latency=" << kv.second.latency;
+      log.spew() << "proc " << kv.first << ": closes mem=" << kv.second.m
+                 << " bw=" << kv.second.bandwidth
+                 << "latency=" << kv.second.latency;
       std::pair<Processor, Memory> pmp;
       pmp.first = kv.first;
       pmp.second = kv.second.m;
@@ -1083,8 +885,8 @@ solve::Mat2D<double> NodeAwareMustEpochMapper::get_gpu_distance_matrix(
   std::vector<Machine::MemoryMemoryAffinity> memMemAffinities;
   machine.get_mem_mem_affinity(memMemAffinities);
   for (auto &aff : memMemAffinities) {
-    log_mapper.spew() << aff.m1 << "-" << aff.m2 << " " << aff.bandwidth << " "
-                      << aff.latency;
+    log.spew() << aff.m1 << "-" << aff.m2 << " " << aff.bandwidth << " "
+               << aff.latency;
   }
 
   solve::Mat2D<double> ret(gpus.size(), gpus.size(), 0);
@@ -1106,7 +908,7 @@ solve::Mat2D<double> NodeAwareMustEpochMapper::get_gpu_distance_matrix(
           }
         }
         if (!found) {
-          log_mapper.error("couldn't find mem-mem affinity for GPU FBs");
+          log.error("couldn't find mem-mem affinity for GPU FBs");
           assert(false);
         }
       }

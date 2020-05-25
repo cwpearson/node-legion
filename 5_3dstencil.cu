@@ -10,7 +10,7 @@
 // use the Node Aware Must Epoch Mapper
 #define USE_NAMEM 1
 
-#include "node_aware_must_epoch_mapper.hpp"
+#include "node_aware_mapper.hpp"
 
 // be noisy
 // #define DEBUG_STENCIL_CALC
@@ -55,17 +55,17 @@ __global__ void init_kernel(Rect<3> rect, AccessorWD acc) {
   const int tz = blockIdx.z * blockDim.z + threadIdx.z;
 
   for (int64_t z = rect.lo[2] + tz; z <= rect.hi[2];
-    z += gridDim.z * blockDim.z) {
-  for (int64_t y = rect.lo[1] + ty; y <= rect.hi[1];
-       y += gridDim.y * blockDim.y) {
-    for (int64_t x = rect.lo[0] + tx; x <= rect.hi[0];
-         x += gridDim.x * blockDim.x) {
-      double v = z + y + x + ripple[x % period] + ripple[y % period];
-      Point<3> p(x, y, z);
-      acc[p] = v;
+       z += gridDim.z * blockDim.z) {
+    for (int64_t y = rect.lo[1] + ty; y <= rect.hi[1];
+         y += gridDim.y * blockDim.y) {
+      for (int64_t x = rect.lo[0] + tx; x <= rect.hi[0];
+           x += gridDim.x * blockDim.x) {
+        double v = z + y + x + ripple[x % period] + ripple[y % period];
+        Point<3> p(x, y, z);
+        acc[p] = v;
+      }
     }
   }
-}
 }
 
 #define INIT_TASK_CPU 0
@@ -109,30 +109,29 @@ __global__ void stencil_kernel(Rect<3> wrRect, Rect<3> rdRect, AccessorWD wrAcc,
   const int tz = blockIdx.z * blockDim.z + threadIdx.z;
 
   for (int64_t z = wrRect.lo[1] + tz; z <= wrRect.hi[1];
-    z += gridDim.z + blockDim.z) {
-  for (int64_t y = wrRect.lo[1] + ty; y <= wrRect.hi[1];
-       y += gridDim.y + blockDim.y) {
-    for (int64_t x = wrRect.lo[0] + tx; x <= wrRect.hi[0];
-         x += gridDim.x + blockDim.x) {
+       z += gridDim.z + blockDim.z) {
+    for (int64_t y = wrRect.lo[1] + ty; y <= wrRect.hi[1];
+         y += gridDim.y + blockDim.y) {
+      for (int64_t x = wrRect.lo[0] + tx; x <= wrRect.hi[0];
+           x += gridDim.x + blockDim.x) {
 
-      if ((x - RADIUS) >= rdRect.lo[0] && (x + RADIUS) <= rdRect.hi[0] &&
-          y >= rdRect.lo[1] && y <= rdRect.hi[1]) {
-        // first derivative in x
-        double v = 0;
-        v += 1 * rdAcc[Point<2>(x - 2, y)];
-        v += -8 * rdAcc[Point<2>(x - 1, y)];
-        v += -1 * rdAcc[Point<2>(x + 2, y)];
-        v += 8 * rdAcc[Point<2>(x + 1, y)];
-        v /= 12;
-        Point<3> p(x, y, z);
-        wrAcc[p] = v;
+        if ((x - RADIUS) >= rdRect.lo[0] && (x + RADIUS) <= rdRect.hi[0] &&
+            y >= rdRect.lo[1] && y <= rdRect.hi[1]) {
+          // first derivative in x
+          double v = 0;
+          v += 1 * rdAcc[Point<3>(x - 2, y, z)];
+          v += -8 * rdAcc[Point<3>(x - 1, y, z)];
+          v += -1 * rdAcc[Point<3>(x + 2, y, z)];
+          v += 8 * rdAcc[Point<3>(x + 1, y, z)];
+          v /= 12;
+          Point<3> p(x, y, z);
+          wrAcc[p] = v;
+        }
       }
     }
   }
 }
-}
 
-#define STENCIL_TASK_CPU 0
 void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
                   Context ctx, Runtime *runtime) {
 
@@ -148,43 +147,6 @@ void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
   std::cerr << "stencil_task: rdRect=" << rdRect << " wrRect=" << wrRect
             << "\n";
 
-#if STENCIL_TASK_CPU
-  const FieldAccessor<READ_ONLY, double, 2> rdAcc(regions[0], readFid);
-  const FieldAccessor<WRITE_DISCARD, double, 2> wrAcc(regions[1], writeFid);
-
-#define STENCIL_TASK_DUMP_INPUT 0
-#if STENCIL_TASK_DUMP_INPUT
-  for (int64_t y = rdRect.lo[1]; y <= rdRect.hi[1]; ++y) {
-    for (int64_t x = rdRect.lo[0]; x <= rdRect.hi[0]; ++x) {
-      Point<2> p(x, y);
-      std::cerr << std::setw(6) << rdAcc[p] << " ";
-    }
-    std::cerr << "\n";
-  }
-#endif // STENCIL_TASK_DUMP_INPUT
-
-#if 1
-  for (int64_t y = wrRect.lo[1]; y <= wrRect.hi[1]; ++y) {
-    for (int64_t x = wrRect.lo[0]; x <= wrRect.hi[0]; ++x) {
-
-      if ((x - RADIUS) >= rdRect.lo[0] && (x + RADIUS) <= rdRect.hi[0] &&
-          y >= rdRect.lo[1] && y <= rdRect.hi[1]) {
-        // first derivative in x
-        double v = 0;
-        v += 1 * rdAcc[Point<2>(x - 2, y)];
-        v += -8 * rdAcc[Point<2>(x - 1, y)];
-        v += -1 * rdAcc[Point<2>(x + 2, y)];
-        v += 8 * rdAcc[Point<2>(x + 1, y)];
-        v /= 12;
-        Point<2> p(x, y);
-        wrAcc[p] = v;
-        std::cerr << p << " " << v << "\n";
-      }
-    }
-  }
-#endif
-
-#else
   const AccessorRO rdAcc(regions[0], readFid);
   const AccessorWD wrAcc(regions[1], writeFid);
   dim3 dimBlock(32, 32);
@@ -193,8 +155,6 @@ void stencil_task(const Task *task, const std::vector<PhysicalRegion> &regions,
   dimGrid.y = ((wrRect.hi[1] - wrRect.lo[1] + 1) + dimBlock.y - 1) / dimBlock.y;
   dimGrid.z = ((wrRect.hi[2] - wrRect.lo[2] + 1) + dimBlock.z - 1) / dimBlock.z;
   stencil_kernel<<<dimGrid, dimBlock>>>(wrRect, rdRect, wrAcc, rdAcc);
-
-#endif // STENCIL_TASK_CPU
 }
 
 __global__ void check_kernel(int *errors, Rect<3> rect, AccessorRO acc) {
@@ -206,23 +166,23 @@ __global__ void check_kernel(int *errors, Rect<3> rect, AccessorRO acc) {
   const int ty = blockIdx.y * blockDim.y + threadIdx.y;
   const int tz = blockIdx.z * blockDim.z + threadIdx.z;
 
-  for (int64_t z = rect.lo[1] + tz; z <= rect.hi[1];
-    z += gridDim.z * blockDim.z) {
-  for (int64_t y = rect.lo[1] + ty; y <= rect.hi[1];
-       y += gridDim.y * blockDim.y) {
-    for (int64_t x = rect.lo[0] + tx; x <= rect.hi[0];
-         x += gridDim.x * blockDim.x) {
+  for (int64_t z = rect.lo[2] + tz; z <= rect.hi[2];
+       z += gridDim.z * blockDim.z) {
+    for (int64_t y = rect.lo[1] + ty; y <= rect.hi[1];
+         y += gridDim.y * blockDim.y) {
+      for (int64_t x = rect.lo[0] + tx; x <= rect.hi[0];
+           x += gridDim.x * blockDim.x) {
 
-      double e = 1 + ripple[x % period];
-      Point<3> p(x, y, z);
-      double v = acc[p];
+        double e = 1 + ripple[x % period];
+        Point<3> p(x, y, z);
+        double v = acc[p];
 
-      if (std::abs(e / v) < 1.01 && std::abs(e / v) > 0.99) {
-        atomicAdd(errors, 1);
+        if (std::abs(e / v) < 1.01 && std::abs(e / v) > 0.99) {
+          atomicAdd(errors, 1);
+        }
       }
     }
   }
-}
 }
 
 void check_task(const Task *task, const std::vector<PhysicalRegion> &regions,
@@ -236,7 +196,7 @@ void check_task(const Task *task, const std::vector<PhysicalRegion> &regions,
   const FieldID fid = *(task->regions[0].privilege_fields.begin());
   const AccessorRO acc(regions[0], fid);
 
-  int *dErrors, hErrors =1;
+  int *dErrors, hErrors = 1;
   cudaMalloc(&dErrors, sizeof(int));
   cudaMemset(dErrors, 0, sizeof(int));
 
@@ -266,27 +226,26 @@ void top_level_task(const Task *task,
   // Check for any command line arguments
 
   const InputArgs &command_args = Runtime::get_input_args();
-  for (int i = 1; i < command_args.argc; i++)
-  {
-    if (!strcmp(command_args.argv[i],"-nx"))
+  for (int i = 1; i < command_args.argc; i++) {
+    if (!strcmp(command_args.argv[i], "-nx"))
       numElements[0] = atoi(command_args.argv[++i]);
-    if (!strcmp(command_args.argv[i],"-ny"))
+    if (!strcmp(command_args.argv[i], "-ny"))
       numElements[1] = atoi(command_args.argv[++i]);
-      if (!strcmp(command_args.argv[i],"-nz"))
+    if (!strcmp(command_args.argv[i], "-nz"))
       numElements[2] = atoi(command_args.argv[++i]);
-    if (!strcmp(command_args.argv[i],"-bx"))
+    if (!strcmp(command_args.argv[i], "-bx"))
       numSubregions[0] = atoi(command_args.argv[++i]);
-    if (!strcmp(command_args.argv[i],"-by"))
+    if (!strcmp(command_args.argv[i], "-by"))
       numSubregions[1] = atoi(command_args.argv[++i]);
-      if (!strcmp(command_args.argv[i],"-bz"))
+    if (!strcmp(command_args.argv[i], "-bz"))
       numSubregions[2] = atoi(command_args.argv[++i]);
-    if (!strcmp(command_args.argv[i],"-s"))
+    if (!strcmp(command_args.argv[i], "-s"))
       numSteps = atoi(command_args.argv[++i]);
   }
 
   // Compute domain index space
   Point<3> lo(0, 0, 0);
-  Point<3> hi(numElements[0] - 1, numElements[1] - 1, numElements[2]-1);
+  Point<3> hi(numElements[0] - 1, numElements[1] - 1, numElements[2] - 1);
   Rect<3> elem_rect(lo, hi);
   IndexSpace is = runtime->create_index_space(ctx, elem_rect);
   std::cerr << is << "\n";
@@ -305,13 +264,13 @@ void top_level_task(const Task *task,
   std::cerr << lr << "\n";
 
   std::cerr << lr.get_index_space() << "\n";
-  Rect<2> rect =
-  runtime->get_index_space_domain(ctx, lr.get_index_space());
+  Rect<3> rect = runtime->get_index_space_domain(ctx, lr.get_index_space());
   std::cerr << rect << "\n";
 
   // launch index space
-  Rect<2> launchRect(Point<3>(0, 0,0),
-                     Point<3>(numSubregions[0] - 1, numSubregions[1] - 1, numSubregions[2] - 1));
+  Rect<3> launchRect(Point<3>(0, 0, 0),
+                     Point<3>(numSubregions[0] - 1, numSubregions[1] - 1,
+                              numSubregions[2] - 1));
   IndexSpace launchSpace = runtime->create_index_space(ctx, launchRect);
 
   // empty argument map
@@ -331,42 +290,42 @@ void top_level_task(const Task *task,
     }
 
     for (int z = 0; z < numSubregions[2]; ++z) {
-    for (int y = 0; y < numSubregions[1]; ++y) {
-      for (int x = 0; x < numSubregions[0]; ++x) {
-        DomainPoint color = DomainPoint(Point<3>(x, y,z));
+      for (int y = 0; y < numSubregions[1]; ++y) {
+        for (int x = 0; x < numSubregions[0]; ++x) {
+          DomainPoint color = DomainPoint(Point<3>(x, y, z));
 
-        {
-          Rect<3> tileRect;
-          tileRect.lo[0] = std::max(tileSz[0] * x - RADIUS, 0ll);
-          tileRect.lo[1] = std::max(tileSz[1] * y - RADIUS, 0ll);
-          tileRect.lo[2] = std::max(tileSz[2] * z - RADIUS, 0ll);
-          tileRect.hi[0] =
-              std::min(tileSz[0] * (x + 1) + RADIUS, numElements[0]) - 1;
-          tileRect.hi[1] =
-              std::min(tileSz[1] * (y + 1) + RADIUS, numElements[1]) - 1;
-              tileRect.hi[2] =
-              std::min(tileSz[2] * (z + 1) + RADIUS, numElements[2]) - 1;
-          std::cerr << "color=" << color << " tile=" << tileRect << "\n";
-          tileColoring[color] = tileRect;
-        }
+          {
+            Rect<3> tileRect;
+            tileRect.lo[0] = std::max(tileSz[0] * x - RADIUS, 0ll);
+            tileRect.lo[1] = std::max(tileSz[1] * y - RADIUS, 0ll);
+            tileRect.lo[2] = std::max(tileSz[2] * z - RADIUS, 0ll);
+            tileRect.hi[0] =
+                std::min(tileSz[0] * (x + 1) + RADIUS, numElements[0]) - 1;
+            tileRect.hi[1] =
+                std::min(tileSz[1] * (y + 1) + RADIUS, numElements[1]) - 1;
+            tileRect.hi[2] =
+                std::min(tileSz[2] * (z + 1) + RADIUS, numElements[2]) - 1;
+            std::cerr << "color=" << color << " tile=" << tileRect << "\n";
+            tileColoring[color] = tileRect;
+          }
 
-        {
-          Rect32> disjointRect;
-          disjointRect.lo[0] = tileSz[0] * x;
-          disjointRect.lo[1] = tileSz[1] * y;
-          disjointRect.lo[2] = tileSz[2] * z;
-          disjointRect.hi[0] =
-              std::min(tileSz[0] * (x + 1), numElements[0]) - 1;
-          disjointRect.hi[1] =
-              std::min(tileSz[1] * (y + 1), numElements[1]) - 1;
-              disjointRect.hi[2] =
-              std::min(tileSz[2] * (z + 1), numElements[2]) - 1;
-          std::cerr << color << " disjoint=" << disjointRect << "\n";
-          disjointColoring[color] = disjointRect;
+          {
+            Rect<3> disjointRect;
+            disjointRect.lo[0] = tileSz[0] * x;
+            disjointRect.lo[1] = tileSz[1] * y;
+            disjointRect.lo[2] = tileSz[2] * z;
+            disjointRect.hi[0] =
+                std::min(tileSz[0] * (x + 1), numElements[0]) - 1;
+            disjointRect.hi[1] =
+                std::min(tileSz[1] * (y + 1), numElements[1]) - 1;
+            disjointRect.hi[2] =
+                std::min(tileSz[2] * (z + 1), numElements[2]) - 1;
+            std::cerr << color << " disjoint=" << disjointRect << "\n";
+            disjointColoring[color] = disjointRect;
+          }
         }
       }
     }
-  }
   }
 
 // overlapping partitions of the index space, including the halo regions

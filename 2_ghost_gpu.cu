@@ -10,7 +10,7 @@
 // use the NodeAwareMustEpochMapper
 #define USE_NAMEM
 #ifdef USE_NAMEM
-#include "node_aware_must_epoch_mapper.hpp"
+#include "node_aware_mapper.hpp"
 #endif
 
 // be noisy
