@@ -108,7 +108,7 @@ __global__ void stencil_kernel(Rect<3> wrRect, Rect<3> rdRect, AccessorWD wrAcc,
   const int ty = blockIdx.y * blockDim.y + threadIdx.y;
   const int tz = blockIdx.z * blockDim.z + threadIdx.z;
 
-  for (int64_t z = wrRect.lo[1] + tz; z <= wrRect.hi[1];
+  for (int64_t z = wrRect.lo[2] + tz; z <= wrRect.hi[2];
        z += gridDim.z + blockDim.z) {
     for (int64_t y = wrRect.lo[1] + ty; y <= wrRect.hi[1];
          y += gridDim.y + blockDim.y) {
