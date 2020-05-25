@@ -46,4 +46,8 @@ add_executable(4-stencil 4_stencil.cu ${SOLVE_SRCS})
 target_link_libraries(4-stencil Legion::Legion)
 target_link_libraries(4-stencil nvToolsExt)
 
+add_executable(5-3dstencil 5_3dstencil.cu ${SOLVE_SRCS})
+target_link_libraries(5-3dstencil Legion::Legion)
+target_link_libraries(5-3dstencil nvToolsExt)
+
 add_executable(bench-solve bench_solve.cpp ${SOLVE_SRCS})
