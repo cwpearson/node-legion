@@ -190,8 +190,8 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
   /* create the slices based on the assignments
      TODO: template function?
    */
-  switch(input.domain.dim) {
-    case 2:  {
+  switch (input.domain.dim) {
+  case 2: {
     size_t i = 0;
     for (PointInDomainIterator<2> pir(input.domain); pir(); ++pir, ++i) {
       TaskSlice slice;
@@ -206,7 +206,7 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
     }
     break;
   }
-    case 3:  {
+  case 3: {
     size_t i = 0;
     for (PointInDomainIterator<3> pir(input.domain); pir(); ++pir, ++i) {
       TaskSlice slice;
@@ -222,7 +222,6 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
     break;
   }
   }
-
 
   log.spew("[exit] %s()", __FUNCTION__);
 }
@@ -645,16 +644,19 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
       solve::ap_sum_brute_force(&cost, weight, distance);
   nvtxRangePop(); // solve_ap
   if (assignment.empty()) {
-    std::cerr << "couldn't find an assignment\n";
+    log.fatal() << "couldn't find an assignment";
     exit(1);
   }
 
-  printf("NodeAwareMustEpochMapper::%s(): task assignment:", __FUNCTION__);
-  for (auto &e : assignment) {
-    std::cerr << e << " ";
+  {
+    std::stringstream ss;
+    ss << __FUNCTION__ << "(): task assignment:";
+    for (auto &e : assignment) {
+      ss << e << " ";
+    }
+    log.info() << ss.str();
+    log.info() << __FUNCTION__ << "(): cost was " << cost;
   }
-  std::cerr << "\n";
-  printf("NodeAwareMustEpochMapper::%s(): cost was %f\n", __FUNCTION__, cost);
 
   // copy the mapping to the output
   std::map<const Task *, Processor> procMap;
