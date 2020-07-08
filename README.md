@@ -10,13 +10,22 @@ This will build legion with CUDA support for SM 61 and install into `legion-inst
 * V100 (Volta): `-DLegion_CUDA_ARCH=70`
 * `-DLegion_OUTPUT_LEVEL=[SPEW DEBUG INFO PRINT WARNING ERROR FATAL NONE]`
 
+First, install legion:
 ```
 git clone git@github.com:cwpearson/legion.git
 cd legion
 git checkout cwpearson-nvidiaml
 mkdir build
 cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=`readlink -f ../../legion-install/` \
+cmake .. -DLegion_USE_CUDA=ON -DLegion_CUDA_ARCH=61 -DCMAKE_INSTALL_PREFIX=`readlink -f ../../legion-install`
+```
+
+Then, point node-legion at the build of legion
+```
+cd node-legion
+mkdir build
+cd build
+cmake .. -DCMAKE_INSTALL_PREFIX=`readlink -f ../legion-install/` \
   -DLegion_USE_CUDA=ON -DLegion_CUDA_ARCH=61
 ```
 
