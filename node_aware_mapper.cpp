@@ -1,5 +1,7 @@
 #include "node_aware_mapper.hpp"
 
+#define NAM_USE_NVTX
+
 using namespace Legion;
 using namespace Legion::Mapping;
 
@@ -115,6 +117,9 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
                                           const SliceTaskInput &input,
                                           SliceTaskOutput &output) {
   log.spew("[entry] %s()", __FUNCTION__);
+#ifdef NAM_USE_NVTX
+  nvtxRangePush("slice_task");
+#endif
 
   log.spew() << __FUNCTION__ << "(): input.domain_is = " << input.domain_is;
   log.spew() << __FUNCTION__ << "(): input.domain    = " << input.domain;
@@ -172,11 +177,15 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
     printf("\n");
   }
 
+#ifdef NAM_USE_NVTX
   nvtxRangePush("solve_ap");
+#endif
   double cost;
   std::vector<size_t> f = solve::ap_sum_brute_force(&cost, weight, distance);
   assert(f.size() == weight.shape()[0]);
+#ifdef NAM_USE_NVTX
   nvtxRangePop();
+#endif
 
   log.spew() << "assignment";
   {
@@ -223,6 +232,9 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
   }
   }
 
+#ifdef NAM_USE_NVTX
+  nvtxRangePop(); // slice_task
+#endif
   log.spew("[exit] %s()", __FUNCTION__);
 }
 
@@ -271,7 +283,9 @@ void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
                                         const Task &task,
                                         const MapTaskInput &input,
                                         MapTaskOutput &output) {
+#ifdef NAM_USE_NVTX
   nvtxRangePush("NodeAwareMustEpochMapper::map_task");
+#endif
   log.spew("[entry] map_task()");
 
   log.spew("%lu task.regions:", task.regions.size());
@@ -308,13 +322,17 @@ void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
   }
 
   log.spew("[exit] map_task()");
+#ifdef NAM_USE_NVTX
   nvtxRangePop();
+#endif
 }
 
 void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
                                               const MapMustEpochInput &input,
                                               MapMustEpochOutput &output) {
+#ifdef NAM_USE_NVTX
   nvtxRangePush("NodeAwareMustEpochMapper::map_must_epoch");
+#endif
   log.debug("%s(): [entry]", __FUNCTION__);
 
   for (const auto &task : input.tasks) {
@@ -570,13 +588,17 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     return bytes;
   };
 
+#ifdef NAM_USE_NVTX
   nvtxRangePush("get_overlap");
+#endif
   for (size_t i = 0; i < groups.size(); ++i) {
     for (size_t j = 0; j < groups.size(); ++j) {
       overlap[i][j] = get_overlap(groups[i], groups[j]);
     }
   }
+#ifdef NAM_USE_NVTX
   nvtxRangePop();
+#endif
   printf("NodeAwareMustEpochMapper::%s(): task-group overlap matrix\n",
          __FUNCTION__);
   for (auto &src : overlap) {
@@ -586,10 +608,13 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     }
     printf("\n");
   }
-
+#ifdef NAM_USE_NVTX
   nvtxRangePush("closest GPU & FB");
+#endif
   std::vector<std::pair<Processor, Memory>> gpus = get_gpu_fbs();
+#ifdef NAM_USE_NVTX
   nvtxRangePop(); // "closest GPU & FB"
+#endif
 
   /* print our GPU number
    */
@@ -598,10 +623,14 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
                 << "/mem:" << gpus[i].second;
   }
 
-  /* build the distance matrix */
+/* build the distance matrix */
+#ifdef NAM_USE_NVTX
   nvtxRangePush("distance matrix");
+#endif
   solve::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
+#ifdef NAM_USE_NVTX
   nvtxRangePop(); // distance matrix
+#endif
 
   printf("NodeAwareMustEpochMapper::%s(): distance matrix\n", __FUNCTION__);
   for (size_t i = 0; i < distance.shape()[1]; ++i) {
@@ -635,14 +664,18 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     printf("\n");
   }
 
-  // TODO: for a must-epoch task, we should never have more tasks than agents,
-  // so solve_ap only needs to work for distance >= weight
-  // TODO this should be QAP
+// TODO: for a must-epoch task, we should never have more tasks than agents,
+// so solve_ap only needs to work for distance >= weight
+// TODO this should be QAP
+#ifdef NAM_USE_NVTX
   nvtxRangePush("solve_ap");
+#endif
   double cost;
   std::vector<size_t> assignment =
       solve::ap_sum_brute_force(&cost, weight, distance);
+#ifdef NAM_USE_NVTX
   nvtxRangePop(); // solve_ap
+#endif
   if (assignment.empty()) {
     log.fatal() << "couldn't find an assignment";
     exit(1);
@@ -736,8 +769,9 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   DefaultMapper::map_must_epoch(ctx, input, output);
 #endif
   printf("NodeAwareMustEpochMapper::%s(): [exit]\n", __FUNCTION__);
-
+#ifdef NAM_USE_NVTX
   nvtxRangePop(); // NodeAwareMustEpochMapper::map_must_epoch
+#endif
 }
 
 /*
@@ -778,6 +812,10 @@ int64_t NodeAwareMustEpochMapper::get_logical_region_overlap(
   Domain intersection = aDom.intersection(bDom);
 
   return intersection.get_volume();
+}
+
+TaskHash NodeAwareMustEpochMapper::compute_task_hash(const Task &task) {
+  return DefaultMapper::compute_task_hash(task);
 }
 
 int64_t NodeAwareMustEpochMapper::get_region_requirement_overlap(
