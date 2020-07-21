@@ -3,7 +3,7 @@
 using namespace Legion;
 using namespace Legion::Mapping;
 
-Logger log("node_aware_mapper");
+Logger log_nam("node_aware_mapper");
 
 NodeAwareMustEpochMapper::NodeAwareMustEpochMapper(MapperRuntime *rt,
                                                    Machine machine,
@@ -34,15 +34,15 @@ void NodeAwareMustEpochMapper::index_task_create_weight_matrix(
   assert(inputDomain.dim == DIM);
 
   {
-    log.spew("point space numbering:");
+    log_nam.spew("point space numbering:");
     int i = 0;
     for (PointInDomainIterator<DIM> pir(inputDomain); pir(); ++pir, ++i) {
-      log.spew() << i << " p=" << *pir;
+      log_nam.spew() << i << " p=" << *pir;
       for (int r = 0; r < task.regions.size(); ++r) {
         // is this a DomainPoint or a color
         LogicalRegion li = runtime->get_logical_subregion_by_color(
             ctx, task.regions[r].partition, DomainPoint(*pir));
-        log.spew() << "  " << r << " "
+        log_nam.spew() << "  " << r << " "
                    << runtime->get_index_space_domain(ctx,
                                                       li.get_index_space());
       }
@@ -114,19 +114,19 @@ struct SliceTaskOutput {
 void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
                                           const SliceTaskInput &input,
                                           SliceTaskOutput &output) {
-  log.spew("[entry] %s()", __FUNCTION__);
+  log_nam.spew("[entry] %s()", __FUNCTION__);
 
-  log.spew() << __FUNCTION__ << "(): input.domain_is = " << input.domain_is;
-  log.spew() << __FUNCTION__ << "(): input.domain    = " << input.domain;
+  log_nam.spew() << __FUNCTION__ << "(): input.domain_is = " << input.domain_is;
+  log_nam.spew() << __FUNCTION__ << "(): input.domain    = " << input.domain;
 
   /* Build the GPU distance matrix
    */
   std::vector<std::pair<Processor, Memory>> gpus = get_gpu_fbs();
   {
-    log.spew("GPU numbering:");
+    log_nam.spew("GPU numbering:");
     int i = 0;
     for (auto p : gpus) {
-      log.spew() << i << " gpu=" << p.first << " fb=" << p.second;
+      log_nam.spew() << i << " gpu=" << p.first << " fb=" << p.second;
     }
   }
 
@@ -160,7 +160,7 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
     index_task_create_weight_matrix<3>(weight, ctx, input.domain, task);
     break;
   default:
-    log.fatal() << "unhandled dimensionality in slice_task";
+    log_nam.fatal() << "unhandled dimensionality in slice_task";
   }
 
   printf("NodeAwareMustEpochMapper::%s(): weight matrix\n", __FUNCTION__);
@@ -178,13 +178,13 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
   assert(f.size() == weight.shape()[0]);
   nvtxRangePop();
 
-  log.spew() << "assignment";
   {
     std::stringstream ss;
     for (auto &e : f) {
       ss << e << " ";
     }
-    log.spew() << ss.str();
+    log_nam.info() << "assignment: " << ss.str();
+    log_nam.info() << "cost:       " << cost;
   }
 
   /* create the slices based on the assignments
@@ -198,7 +198,7 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
       // slice subdomain is a single point
       slice.domain = Rect<2>(*pir, *pir);
       slice.proc = gpus[f[i]].first;
-      log.spew() << "assign slice domain " << slice.domain << " to proc "
+      log_nam.spew() << "assign slice domain " << slice.domain << " to proc "
                  << slice.proc;
       slice.recurse = false;
       slice.stealable = true;
@@ -213,7 +213,7 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
       // slice subdomain is a single point
       slice.domain = Rect<3>(*pir, *pir);
       slice.proc = gpus[f[i]].first;
-      log.spew() << "assign slice domain " << slice.domain << " to proc "
+      log_nam.spew() << "assign slice domain " << slice.domain << " to proc "
                  << slice.proc;
       slice.recurse = false;
       slice.stealable = true;
@@ -223,7 +223,7 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
   }
   }
 
-  log.spew("[exit] %s()", __FUNCTION__);
+  log_nam.spew("[exit] %s()", __FUNCTION__);
 }
 
 // inspired by DefaultMapper::have_proc_kind_variant
@@ -251,20 +251,20 @@ void NodeAwareMustEpochMapper::select_tasks_to_map(
     const MapperContext ctx, const SelectMappingInput &input,
     SelectMappingOutput &output) {
 
-  log.spew("[entry] %s()", __FUNCTION__);
+  log_nam.spew("[entry] %s()", __FUNCTION__);
 
   for (const Task *task : input.ready_tasks) {
-    log.spew("task %u", task->task_id);
+    log_nam.spew("task %u", task->task_id);
   }
 
   // just take all tasks
-  log.debug("%s(): selecting all %lu tasks", __FUNCTION__,
+  log_nam.debug("%s(): selecting all %lu tasks", __FUNCTION__,
             input.ready_tasks.size());
   for (const Task *task : input.ready_tasks) {
     output.map_tasks.insert(task);
   }
 
-  log.spew("[exit] %s()", __FUNCTION__);
+  log_nam.spew("[exit] %s()", __FUNCTION__);
 }
 
 void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
@@ -272,16 +272,16 @@ void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
                                         const MapTaskInput &input,
                                         MapTaskOutput &output) {
   nvtxRangePush("NodeAwareMustEpochMapper::map_task");
-  log.spew("[entry] map_task()");
+  log_nam.spew("[entry] map_task()");
 
-  log.spew("%lu task.regions:", task.regions.size());
+  log_nam.spew("%lu task.regions:", task.regions.size());
   for (auto &rr : task.regions) {
-    log.spew() << rr.region;
+    log_nam.spew() << rr.region;
   }
 
   if (task.target_proc.kind() == Processor::TOC_PROC) {
 
-    log.spew("task %u (parent_task=%u)", task.task_id,
+    log_nam.spew("task %u (parent_task=%u)", task.task_id,
              task.parent_task->task_id);
 
     /* some regions may already be mapped
@@ -295,19 +295,19 @@ void NodeAwareMustEpochMapper::map_task(const MapperContext ctx,
     }
   }
 
-  log.spew("map_task() defer to DefaultMapper::map_task");
+  log_nam.spew("map_task() defer to DefaultMapper::map_task");
   DefaultMapper::map_task(ctx, task, input, output);
 
   // get the runtime to call `postmap_task` when the task finishes running
   // TODO: causes a crash by itself
   output.postmap_task = false;
 
-  log.spew("target_procs.size()=%lu", output.target_procs.size());
+  log_nam.spew("target_procs.size()=%lu", output.target_procs.size());
   for (auto &proc : output.target_procs) {
-    log.spew() << proc;
+    log_nam.spew() << proc;
   }
 
-  log.spew("[exit] map_task()");
+  log_nam.spew("[exit] map_task()");
   nvtxRangePop();
 }
 
@@ -315,17 +315,17 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
                                               const MapMustEpochInput &input,
                                               MapMustEpochOutput &output) {
   nvtxRangePush("NodeAwareMustEpochMapper::map_must_epoch");
-  log.debug("%s(): [entry]", __FUNCTION__);
+  log_nam.debug("%s(): [entry]", __FUNCTION__);
 
   for (const auto &task : input.tasks) {
-    log.spew("task %u", task->task_id);
+    log_nam.spew("task %u", task->task_id);
   }
 
   // ensure all tasks can run on GPU
   for (const auto &task : input.tasks) {
     bool ok = has_gpu_variant(ctx, task->task_id);
     if (!ok) {
-      log.error("NodeAwareMustEpochMapper error: a task without a "
+      log_nam.error("NodeAwareMustEpochMapper error: a task without a "
                 "TOC_PROC variant cannot be mapped.");
       assert(false);
     }
@@ -361,7 +361,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     TaskGroup group = {task};
     groups.push_back(group);
   }
-  log.debug("%s(): %lu task groups after tasks", __FUNCTION__, groups.size());
+  log_nam.debug("%s(): %lu task groups after tasks", __FUNCTION__, groups.size());
 
   // which logical region in each task must be mapped to the same physical
   // instance
@@ -377,7 +377,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     }
     groups.push_back(group);
   }
-  log.debug("%s(): %lu task groups after constraints", __FUNCTION__,
+  log_nam.debug("%s(): %lu task groups after constraints", __FUNCTION__,
             groups.size());
 
   // iteratively merge any groups that have the same task
@@ -405,7 +405,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     }
   }
 
-  log.debug("%s(): %lu task groups after merge", __FUNCTION__, groups.size());
+  log_nam.debug("%s(): %lu task groups after merge", __FUNCTION__, groups.size());
   for (size_t gi = 0; gi < groups.size(); ++gi) {
   }
 
@@ -594,7 +594,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   /* print our GPU number
    */
   for (size_t i = 0; i < gpus.size(); ++i) {
-    log.debug() << "GPU index " << i << "proc:" << gpus[i].first
+    log_nam.debug() << "GPU index " << i << "proc:" << gpus[i].first
                 << "/mem:" << gpus[i].second;
   }
 
@@ -630,7 +630,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   for (size_t i = 0; i < weight.shape()[1]; ++i) {
     printf("NodeAwareMustEpochMapper::%s():", __FUNCTION__);
     for (size_t j = 0; j < weight.shape()[0]; ++j) {
-      printf(" %6ld", weight.at(i, j));
+      printf(" %8ld", weight.at(i, j));
     }
     printf("\n");
   }
@@ -644,7 +644,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
       solve::ap_sum_brute_force(&cost, weight, distance);
   nvtxRangePop(); // solve_ap
   if (assignment.empty()) {
-    log.fatal() << "couldn't find an assignment";
+    log_nam.fatal() << "couldn't find an assignment";
     exit(1);
   }
 
@@ -654,8 +654,8 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     for (auto &e : assignment) {
       ss << e << " ";
     }
-    log.info() << ss.str();
-    log.info() << __FUNCTION__ << "(): cost was " << cost;
+    log_nam.info() << ss.str();
+    log_nam.info() << __FUNCTION__ << "(): cost was " << cost;
   }
 
   // copy the mapping to the output
@@ -685,7 +685,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
 
       const Task *task = constraint.constrained_tasks[idx];
       unsigned req_idx = constraint.requirement_indexes[idx];
-      log.debug("input constraint %u: task %u region %u", cid, task->task_id,
+      log_nam.debug("input constraint %u: task %u region %u", cid, task->task_id,
                 req_idx);
       needed_regions.insert(task->regions[req_idx].region);
       needed_fields.insert(task->regions[req_idx].privilege_fields.begin(),
@@ -717,7 +717,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
         inst, created, true /*acquire*/);
     assert(ok);
     if (!ok) {
-      log.error("Default mapper error. Unable to make instance(s) "
+      log_nam.error("Default mapper error. Unable to make instance(s) "
                 "in memory " IDFMT " for index %d of constrained "
                 "task %s (ID %lld) in must epoch launch.",
                 mem.id, constraint.requirement_indexes[0],
@@ -755,7 +755,7 @@ void NodeAwareMustEpochMapper::postmap_task(const MapperContext ctx,
                                             const PostMapInput &input,
                                             PostMapOutput &output) {
 
-  log.debug() << "in NodeAwareMustEpochMapper::postmap_task";
+  log_nam.debug() << "in NodeAwareMustEpochMapper::postmap_task";
 }
 
 // TODO: incomplete
@@ -865,7 +865,7 @@ NodeAwareMustEpochMapper::get_gpu_fbs() {
       assert(kv.first == kv.second.p);
       assert(kv.first.kind() == Processor::TOC_PROC);
       assert(kv.second.m.kind() == Memory::GPU_FB_MEM);
-      log.spew() << "proc " << kv.first << ": closes mem=" << kv.second.m
+      log_nam.spew() << "proc " << kv.first << ": closes mem=" << kv.second.m
                  << " bw=" << kv.second.bandwidth
                  << "latency=" << kv.second.latency;
       std::pair<Processor, Memory> pmp;
@@ -887,7 +887,7 @@ solve::Mat2D<double> NodeAwareMustEpochMapper::get_gpu_distance_matrix(
   std::vector<Machine::MemoryMemoryAffinity> memMemAffinities;
   machine.get_mem_mem_affinity(memMemAffinities);
   for (auto &aff : memMemAffinities) {
-    log.spew() << aff.m1 << "-" << aff.m2 << " " << aff.bandwidth << " "
+    log_nam.spew() << aff.m1 << "-" << aff.m2 << " " << aff.bandwidth << " "
                << aff.latency;
   }
 
@@ -910,7 +910,7 @@ solve::Mat2D<double> NodeAwareMustEpochMapper::get_gpu_distance_matrix(
           }
         }
         if (!found) {
-          log.error("couldn't find mem-mem affinity for GPU FBs");
+          log_nam.error("couldn't find mem-mem affinity for GPU FBs");
           assert(false);
         }
       }
