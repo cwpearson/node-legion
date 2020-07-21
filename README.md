@@ -25,7 +25,7 @@ Then, point node-legion at the build of legion
 cd node-legion
 mkdir build
 cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=`readlink -f ../legion-install/` \
+cmake .. -DCMAKE_PREFIX_PATH=`readlink -f ../legion-install/` \
   -DLegion_USE_CUDA=ON -DLegion_CUDA_ARCH=61
 ```
 

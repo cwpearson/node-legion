@@ -135,6 +135,11 @@ typedef unsigned long long TaskHash;
 class NodeAwareMustEpochMapper : public DefaultMapper {
 
 private:
+  /* pairs of each GPU and its closes FB
+  */
+  std::vector<std::pair<Processor, Memory>> gpuFBs;
+
+
   /* compute the hash of a task
    */
   TaskHash compute_task_hash(const Task &task);

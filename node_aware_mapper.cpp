@@ -11,7 +11,9 @@ NodeAwareMustEpochMapper::NodeAwareMustEpochMapper(MapperRuntime *rt,
                                                    Machine machine,
                                                    Processor local,
                                                    const char *mapper_name)
-    : DefaultMapper(rt, machine, local, mapper_name) {}
+    : DefaultMapper(rt, machine, local, mapper_name) {
+      gpuFBs = get_gpu_fbs();
+    }
 
 void NodeAwareMustEpochMapper::mapper_registration(
     Machine machine, Runtime *rt, const std::set<Processor> &local_procs) {
@@ -126,24 +128,17 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
 
   /* Build the GPU distance matrix
    */
-#ifdef NAM_USE_NVTX
-  nvtxRangePush("get_gpu_fbs");
-#endif
-  std::vector<std::pair<Processor, Memory>> gpus = get_gpu_fbs();
-#ifdef NAM_USE_NVTX
-  nvtxRangePop();
-#endif
   {
     log_nam.spew("GPU numbering:");
     int i = 0;
-    for (auto p : gpus) {
+    for (auto p : gpuFBs) {
       log_nam.spew() << i << " gpu=" << p.first << " fb=" << p.second;
     }
   }
 #ifdef NAM_USE_NVTX
   nvtxRangePush("get_gpu_distance_matrix");
 #endif
-  solve::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
+  solve::Mat2D<double> distance = get_gpu_distance_matrix(gpuFBs);
 #ifdef NAM_USE_NVTX
   nvtxRangePop();
 #endif
@@ -223,7 +218,7 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
       TaskSlice slice;
       // slice subdomain is a single point
       slice.domain = Rect<2>(*pir, *pir);
-      slice.proc = gpus[f[i]].first;
+      slice.proc = gpuFBs[f[i]].first;
       log_nam.spew() << "assign slice domain " << slice.domain << " to proc "
                  << slice.proc;
       slice.recurse = false;
@@ -238,7 +233,7 @@ void NodeAwareMustEpochMapper::slice_task(MapperContext ctx, const Task &task,
       TaskSlice slice;
       // slice subdomain is a single point
       slice.domain = Rect<3>(*pir, *pir);
-      slice.proc = gpus[f[i]].first;
+      slice.proc = gpuFBs[f[i]].first;
       log_nam.spew() << "assign slice domain " << slice.domain << " to proc "
                  << slice.proc;
       slice.recurse = false;
@@ -632,26 +627,20 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
     }
     printf("\n");
   }
-#ifdef NAM_USE_NVTX
-  nvtxRangePush("closest GPU & FB");
-#endif
-  std::vector<std::pair<Processor, Memory>> gpus = get_gpu_fbs();
-#ifdef NAM_USE_NVTX
-  nvtxRangePop(); // "closest GPU & FB"
-#endif
+
 
   /* print our GPU number
    */
-  for (size_t i = 0; i < gpus.size(); ++i) {
-    log_nam.debug() << "GPU index " << i << "proc:" << gpus[i].first
-                << "/mem:" << gpus[i].second;
+  for (size_t i = 0; i < gpuFBs.size(); ++i) {
+    log_nam.debug() << "GPU index " << i << "proc:" << gpuFBs[i].first
+                << "/mem:" << gpuFBs[i].second;
   }
 
 /* build the distance matrix */
 #ifdef NAM_USE_NVTX
   nvtxRangePush("distance matrix");
 #endif
-  solve::Mat2D<double> distance = get_gpu_distance_matrix(gpus);
+  solve::Mat2D<double> distance = get_gpu_distance_matrix(gpuFBs);
 #ifdef NAM_USE_NVTX
   nvtxRangePop(); // distance matrix
 #endif
@@ -719,7 +708,7 @@ void NodeAwareMustEpochMapper::map_must_epoch(const MapperContext ctx,
   std::map<const Task *, Processor> procMap;
   for (size_t gi = 0; gi < groups.size(); ++gi) {
     for (const Task *task : groups[gi]) {
-      procMap[task] = gpus[assignment[gi]].first;
+      procMap[task] = gpuFBs[assignment[gi]].first;
     }
   }
   for (unsigned i = 0; i < input.tasks.size(); ++i) {
