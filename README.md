@@ -59,8 +59,13 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
 ## Run our code
 
 
-* `print-machine`: print some info Legion can tell about the machine
+* `print-machine`: print some info Legion can tell about the `machine
 * `2-ghost-gpu`: 1D stencil with explicit ghost and exchange, with node-aware mapping
+* `5-3dstencil`: 3D stencil with index space launch
+  * `-nx/-ny/-nz`: x/y/z elements
+  * `-bx/-by/-bz`: x/y/z subregions
+  * `-s`: iterations
+
 
 * Legion Runtime Flags ([more info](https://github.com/StanfordLegion/legion#command-line-flags))
   * `-ll:gpu <int>`: GPUs to create per process
@@ -71,6 +76,7 @@ cmake .. -DCMAKE_PREFIX_PATH=../legion-install
   * log level `0` is everything, `5` is errors only
     * `-level gpu=2`: to see some logging about GPU distances
     * `-level node_aware_must_epoch_mapper=1` to see some debug messages from the Mapper
+    * `-level node_aware_mapper=0` to see all Node-Aware Mapper output
     * `-level nvml=0,realm/linux=0,system,topology=0`: to see info about system topology
 
 
